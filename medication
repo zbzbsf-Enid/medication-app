@@ -10,7 +10,7 @@ st.title("💊 北大每日用藥與庫存管理系統 (2026)")
 st.caption("自動化追蹤每日領用量、即時庫存變化與安全庫存預警")
 
 # 讀取 Excel 檔案
-FILE_PATH = "北大每日用藥紀錄2026年.xlsx"
+FILE_PATH = "https://docs.google.com/spreadsheets/d/1gv_1Fz0iR9kUFVj9P_IN0dJvz-dRnv5v-Wq_UY8qvN0/edit?usp=sharing"
 
 @st.cache_data(ttl=60)
 def load_data():
