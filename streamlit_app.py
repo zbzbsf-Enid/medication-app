@@ -1,0 +1,88 @@
+import streamlit as st
+import pandas as pd
+import datetime
+
+# 設定頁面標題與佈局
+st.set_page_config(page_title="北大每日用藥庫存管理系統", layout="wide")
+
+st.title("💊 北大每日用藥與庫存管理系統 (2026)")
+st.caption("自動化追蹤每日領用量、即時庫存變化與安全庫存預警")
+
+# 讀取 Excel 檔案
+FILE_PATH = "北大每日用藥紀錄2026年.xlsx"
+
+@st.cache_data(ttl=60)
+def load_data():
+    try:
+        # 讀取 Excel（若有多個工作表可調整 sheet_name）
+        df = pd.read_excel(FILE_PATH)
+        return df
+    except Exception as e:
+        st.error(f"讀取檔案失敗，請確認檔案路徑是否正確：{e}")
+        return None
+
+df = load_data()
+
+if df is not None:
+    # 側邊欄：篩選與功能選單
+    st.sidebar.header("🔍 功能選單")
+    menu_option = st.sidebar.radio("選擇操作", ["庫存總覽與預警", "每日用藥紀錄查詢", "新增/更新紀錄"])
+
+    # 基礎資料處理 (視 Excel 實際欄位名稱調整)
+    # 假設欄位包含：[日期, 藥品名稱, 進貨數量, 領用數量, 現有庫存, 安全庫存量, 效期]
+    
+    if menu_option == "庫存總覽與預警":
+        st.subheader("📊 即時庫存數據概覽")
+        
+        # 數據指標卡
+        col1, col2, col3, col4 = st.columns(4)
+        total_meds = len(df['藥品名稱'].unique()) if '藥品名稱' in df.columns else 0
+        
+        col1.metric("藥品品項總數", f"{total_meds} 種")
+        
+        if '現有庫存' in df.columns and '安全庫存量' in df.columns:
+            low_stock_df = df[df['現有庫存'] <= df['安全庫存量']]
+            col2.metric("⚠️ 低庫存預警品項", f"{len(low_stock_df)} 種", delta_color="inverse")
+        
+        st.markdown("---")
+        
+        # 低庫存警戒表
+        st.subheader("⚠️ 需補貨藥品清單")
+        if '現有庫存' in df.columns and '安全庫存量' in df.columns:
+            if not low_stock_df.empty:
+                st.warning("以下藥品庫存已低於安全庫存量，請儘速補充：")
+                st.dataframe(low_stock_df[['藥品名稱', '現有庫存', '安全庫存量']], use_container_width=True)
+            else:
+                st.success("目前所有藥品庫存皆高於安全庫存量！")
+        
+        # 完整數據列表
+        st.subheader("📋 藥品庫存明細")
+        search_term = st.text_input("🔎 搜尋藥品名稱：")
+        if search_term:
+            filtered_df = df[df['藥品名稱'].str.contains(search_term, na=False)]
+            st.dataframe(filtered_df, use_container_width=True)
+        else:
+            st.dataframe(df, use_container_width=True)
+
+    elif menu_option == "每日用藥紀錄查詢":
+        st.subheader("📅 歷史用藥紀錄與消耗統計")
+        if '日期' in df.columns:
+            df['日期'] = pd.to_datetime(df['日期'])
+            selected_date = st.date_input("選擇查詢日期", datetime.date.today())
+            daily_data = df[df['日期'].dt.date == selected_date]
+            
+            st.write(f"**{selected_date} 的用藥與異動紀錄：**")
+            st.dataframe(daily_data, use_container_width=True)
+
+    elif menu_option == "新增/更新紀錄":
+        st.subheader("✍️ 登記每日用藥或進貨")
+        with st.form("entry_form"):
+            date_input = st.date_input("日期", datetime.date.today())
+            med_name = st.text_input("藥品名稱")
+            action_type = st.selectbox("異動類型", ["領用（扣減庫存）", "進貨（增加庫存）"])
+            quantity = st.number_input("數量", min_value=1, step=1)
+            submitted = st.form_submit_button("提交紀錄")
+            
+            if submitted:
+                st.success(f"已更新：{date_input} - {med_name} {action_type} {quantity} 個")
+                st.info("💡 提示：此處可對接 Excel 自動存檔或資料庫寫入功能。")
