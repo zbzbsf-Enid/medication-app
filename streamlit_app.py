@@ -18,7 +18,6 @@ def clean_and_parse_inventory(df):
     df_clean = df.copy()
     df_clean.columns = df_clean.columns.astype(str).str.strip()
     
-    # 搜尋期初庫存欄位名稱
     stock_col = None
     for possible_name in ['115年8月剩餘量', '期初庫存', '目前庫存', '庫存', '剩餘量']:
         if possible_name in df_clean.columns:
@@ -39,11 +38,11 @@ def get_init_stock_col(df):
 # 2. 初始化 Session State 資料庫
 if "inventory" not in st.session_state:
     raw_df = pd.DataFrame([
-        {"藥品名稱": "Actein 600mg (愛克痰發泡錠)", "115年8月剩餘量": 168, "有效期限": "2028-04-30"},
-        {"藥品名稱": "Actein 600mg (愛克痰發泡錠)", "115年8月剩餘量": 461, "有效期限": "2028-05-31"},
-        {"藥品名稱": "Amoxicillin 500mg (安莫西林)", "115年8月剩餘量": 400, "有效期限": "2028-02-28"},
-        {"藥品名稱": "Fexofenadine 60mg (飛敏耐膜衣錠)", "115年8月剩餘量": 0, "有效期限": "2027-11-25"},
-        {"藥品名稱": "Biofermin (表飛鳴)", "115年8月剩餘量": 604, "有效期限": "2028-05-31"}
+        {"藥品名稱": "Actein 600mg (愛克痰發泡錠)", "115年8月剩餘量": 168, "購入量": 0, "有效期限": "2028-04-30"},
+        {"藥品名稱": "Actein 600mg (愛克痰發泡錠)", "115年8月剩餘量": 461, "購入量": 0, "有效期限": "2028-05-31"},
+        {"藥品名稱": "Amoxicillin 500mg (安莫西林)", "115年8月剩餘量": 400, "購入量": 0, "有效期限": "2028-02-28"},
+        {"藥品名稱": "Fexofenadine 60mg (飛敏耐膜衣錠)", "115年8月剩餘量": 0, "購入量": 0, "有效期限": "2027-11-25"},
+        {"藥品名稱": "Biofermin (表飛鳴)", "115年8月剩餘量": 604, "購入量": 0, "有效期限": "2028-05-31"}
     ])
     st.session_state.inventory = clean_and_parse_inventory(raw_df)
 
@@ -54,7 +53,7 @@ if "logs" not in st.session_state:
 
 # 3. 側邊欄控制與資料同步
 st.sidebar.title("🏥 衛保組管理系統")
-page = st.sidebar.radio("📍 請選擇功能頁面", ["💊 藥品領用與登記", "📦 庫存盤點與校正", "☁️ 月報表加減統計與匯出"])
+page = st.sidebar.radio("📍 請選擇功能頁面", ["💊 藥品領用與登記", "📥 藥品進貨/入庫登記", "📦 庫存盤點與校正", "☁️ 月報表加減統計與匯出"])
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔗 串接 Google 雲端試算表")
@@ -85,7 +84,7 @@ def fifo_deduct(df_inv, drug_eng_name, qty_needed):
     if matches.empty:
         return df_inv, False, f"找不到藥品：{drug_eng_name}"
     
-    total_stock = matches[stock_col].sum()
+    total_stock = matches[stock_col].sum() + matches.get('購入量', 0).sum()
     if total_stock < qty_needed:
         return df_inv, False, f"{drug_eng_name} 總庫存不足 (現有: {int(total_stock)}, 需要: {qty_needed})"
     
@@ -111,7 +110,6 @@ def build_monthly_report_analysis(inv_df, logs_df):
     report_df = inv_df.copy()
     init_col = get_init_stock_col(report_df)
     
-    # 確保統計欄位存在且為數字型態
     stat_cols = ['購入量', '過期報銷', '公藥使用', '當月使用總量', '115年9月期末剩餘量', '實體盤點數量', '9月消耗量']
     for c in stat_cols:
         if c not in report_df.columns:
@@ -132,14 +130,12 @@ def build_monthly_report_analysis(inv_df, logs_df):
             matched_logs = logs_temp[logs_temp['藥品名稱'].apply(lambda x: str(x) in drug_name or drug_name in str(x))]
             
             if not matched_logs.empty:
-                # 分類歸總：公藥使用與過期報銷
                 pub_used = matched_logs[matched_logs['用途分類'] == '🏛️ 公藥使用']['領用數量'].sum()
                 exp_used = matched_logs[matched_logs['用途分類'] == '🗑️ 過期報銷']['領用數量'].sum()
                 
                 report_df.at[idx, '公藥使用'] = pub_used
                 report_df.at[idx, '過期報銷'] = exp_used
                 
-                # 每日一般領用填入日期欄
                 general_logs = matched_logs[~matched_logs['用途分類'].isin(['🏛️ 公藥使用', '🗑️ 過期報銷'])]
                 for _, log_row in general_logs.iterrows():
                     if pd.notna(log_row['領用日期']):
@@ -147,7 +143,6 @@ def build_monthly_report_analysis(inv_df, logs_df):
                         if d_str in report_df.columns:
                             report_df.at[idx, d_str] += log_row['領用數量']
 
-    # 🧮 核心加減統計公式計算
     date_sum = report_df[date_cols].sum(axis=1) if date_cols else 0
     report_df['當月使用總量'] = date_sum + report_df['公藥使用'] + report_df['過期報銷']
     report_df['115年9月期末剩餘量'] = report_df[init_col] + report_df['購入量'] - report_df['當月使用總量']
@@ -166,15 +161,13 @@ if page == "💊 藥品領用與登記":
     
     with col_left:
         st.subheader("💊 藥品領用與登記")
-        st.caption("點選下方搜尋欄選擇藥品，設定數量與用途（如公藥使用），發藥紀錄將自動計入月報表統計。")
         
         c_date, c_cat = st.columns([1, 1])
         with c_date:
             issue_date = st.date_input("📅 領用日期", value=date.today())
         with c_cat:
-            # 🔑 增加獨立且顯眼的「公藥使用」選項
             category = st.selectbox(
-                "🏷️ 用途分類 (請特別留意選擇)", 
+                "🏷️ 用途分類", 
                 ["📋 一般消耗/學生領用", "🏛️ 公藥使用", "🗑️ 過期報銷", "其他"]
             )
             
@@ -184,7 +177,7 @@ if page == "💊 藥品領用與登記":
         for _, row in available_inventory.iterrows():
             d_name = str(row.get('藥品名稱', '')).strip()
             exp_date = str(row.get('有效期限', '')).strip() if pd.notna(row.get('有效期限')) else ""
-            stk_val = int(row.get(stock_col, 0))
+            stk_val = int(row.get(stock_col, 0)) + int(row.get('購入量', 0))
             
             if exp_date and exp_date.lower() != 'nan':
                 opt_str = f"{d_name} | 效期:{exp_date} (庫存:{stk_val})"
@@ -220,7 +213,7 @@ if page == "💊 藥品領用與登記":
                 )
                 quantities[opt] = q
                 
-            note = st.text_input("📝 備註說明 (選填)", placeholder="例如：衛保組活動備藥、公藥領用、研討會備用...")
+            note = st.text_input("📝 備註說明 (選填)", placeholder="例如：衛保組活動備藥、公藥領用...")
             
             if st.button("確認登記並扣減庫存", type="primary", use_container_width=True):
                 success_all = True
@@ -246,32 +239,79 @@ if page == "💊 藥品領用與登記":
                         messages.append(msg)
                 
                 if success_all:
-                    st.success("✅ 藥品領用登記成功！庫存與紀錄已即時更新。")
+                    st.success("✅ 藥品領用登記成功！")
                     st.rerun()
                 else:
                     st.error("⚠️ 登記過程發生錯誤：" + "；".join(messages))
 
     with col_right:
         st.subheader("📋 當前藥品庫存總覽")
-        st.dataframe(
-            st.session_state.inventory,
-            use_container_width=True,
-            hide_index=True,
-            height=450
-        )
+        st.dataframe(st.session_state.inventory, use_container_width=True, hide_index=True, height=450)
 
+
+# --- 頁面 2: 📥 藥品進貨/入庫登記 (全新功能) ---
+elif page == "📥 藥品進貨/入庫登記":
+    st.subheader("📥 藥品新購入量登記")
+    st.caption("選擇既存藥品填入購入數量，系統會自動加算至月報表中的『購入量』與庫存；若為全新藥品可直接建立新紀錄。")
+    
+    st.session_state.inventory = clean_and_parse_inventory(st.session_state.inventory)
+    
+    # 取得現有所有不重複藥品名稱
+    existing_drugs = st.session_state.inventory['藥品名稱'].dropna().unique().tolist()
+    
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        entry_type = st.radio("選擇進貨類型", ["已有藥品進貨 (更新購入量)", "➕ 建立全新的藥品/新批號"])
+        
+    with c2:
+        purchase_date = st.date_input("📅 進貨日期", value=date.today())
+        
     st.markdown("---")
-    st.subheader("📜 歷史領用與發藥紀錄")
-    if not st.session_state.logs.empty:
-        st.dataframe(st.session_state.logs, use_container_width=True, hide_index=True)
-    else:
-        st.info("目前尚無任何領用紀錄。")
+    
+    if entry_type == "已有藥品進貨 (更新購入量)":
+        target_drug = st.selectbox("請選擇進貨藥品名稱", options=existing_drugs)
+        purchased_qty = st.number_input("📦 本次購入數量", min_value=1, value=100, step=10)
+        
+        if st.button("➕ 確認登記進貨量", type="primary"):
+            # 尋找該藥品列，更新『購入量』欄位
+            if '購入量' not in st.session_state.inventory.columns:
+                st.session_state.inventory['購入量'] = 0
+                
+            match_indices = st.session_state.inventory[st.session_state.inventory['藥品名稱'] == target_drug].index
+            if not match_indices.empty:
+                # 預設更新至第一筆該藥品，或累加購入量
+                idx = match_indices[0]
+                cur_p = pd.to_numeric(st.session_state.inventory.at[idx, '購入量'], errors='coerce')
+                st.session_state.inventory.at[idx, '購入量'] = (0 if pd.na(cur_p) else cur_p) + purchased_qty
+                
+                st.success(f"✅ 已成功為【{target_drug}】新增購入量 {purchased_qty}！")
+                st.rerun()
+                
+    else: # 建立全新藥品/新批號
+        new_drug_name = st.text_input("輸入新藥品名稱 (英/中)", placeholder="例如：Panadol 500mg (普拿疼)")
+        new_exp_date = st.date_input("🗓️ 有效期限", value=date(2028, 12, 31))
+        new_purchased_qty = st.number_input("📦 進貨購入數量", min_value=1, value=100, step=10)
+        
+        if st.button("➕ 建立新藥品並登記購入", type="primary"):
+            if not new_drug_name.strip():
+                st.error("⚠️ 請輸入藥品名稱！")
+            else:
+                init_col = get_init_stock_col(st.session_state.inventory)
+                new_row = {
+                    "藥品名稱": new_drug_name.strip(),
+                    init_col: 0,
+                    "購入量": new_purchased_qty,
+                    "有效期限": new_exp_date.strftime("%Y-%m-%d")
+                }
+                st.session_state.inventory = pd.concat([st.session_state.inventory, pd.DataFrame([new_row])], ignore_index=True)
+                st.success(f"✅ 已成功新增藥品【{new_drug_name}】並登記購入量 {new_purchased_qty}！")
+                st.rerun()
 
 
-# --- 頁面 2: 庫存盤點與校正 ---
+# --- 頁面 3: 📦 庫存盤點與校正 ---
 elif page == "📦 庫存盤點與校正":
     st.subheader("📦 庫存盤點與資料手動校正")
-    st.caption("您可以直接在下方表格中修改庫存數量。")
+    st.caption("可以直接在下方表格中修改期初數、購入量或效期等欄位。")
     
     edited_df = st.data_editor(
         st.session_state.inventory,
@@ -286,12 +326,10 @@ elif page == "📦 庫存盤點與校正":
         st.rerun()
 
 
-# --- 頁面 3: 月報表加減統計與匯出 ---
+# --- 頁面 4: ☁️ 月報表加減統計與匯出 ---
 elif page == "☁️ 月報表加減統計與匯出":
     st.subheader("📊 國立臺北大學衛保組 - 月報表動態加減統計與匯出")
-    st.caption("系統會依據發藥紀錄，自動進行『每日消耗量 + 公藥使用 + 過期報銷 = 當月使用總量』與期末結算加減分析。")
     
-    # 進行動態加減統計分析計算
     report_analysis = build_monthly_report_analysis(st.session_state.inventory, st.session_state.logs)
     
     tab_summary, tab_detail = st.tabs(["📊 全學期月報表加減統計分析", "📜 發藥領用歷史明細"])
