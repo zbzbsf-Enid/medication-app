@@ -15,12 +15,9 @@ if "inventory" not in st.session_state:
     st.session_state.inventory = pd.DataFrame([
         {"藥品名稱 (英文)": "Actein 600mg", "中文名稱": "愛克痰發泡錠", "目前庫存": 168, "有效期限": "2028-04-30", "用途/備註": "去痰"},
         {"藥品名稱 (英文)": "Actein 600mg", "中文名稱": "愛克痰發泡錠", "目前庫存": 461, "有效期限": "2028-05-31", "用途/備註": "去痰"},
-        {"藥品名稱 (英文)": "Amoxicillin 500mg", "中文名稱": "安莫西林", "目前庫存": 400, "有效期限": "2028-02-28", "用途/備註": "抗生素/葡萄球菌/鏈球菌/肺"},
-        {"藥品名稱 (英文)": "Amoxicillin 500mg", "中文名稱": "安莫西林", "目前庫存": 1000, "有效期限": "2028-09-03", "用途/備註": "抗生素/葡萄球菌/鏈球菌/肺"},
-        {"藥品名稱 (英文)": "Amoxicillin 250mg", "中文名稱": "安莫西林", "目前庫存": 0, "有效期限": "2026-12-31", "用途/備註": "抗生素/葡萄球菌/鏈球菌/肺"},
-        {"藥品名稱 (英文)": "Ancogen", "中文名稱": "安可腱", "目前庫存": 380, "有效期限": "2027-09-30", "用途/備註": "骨骼肌肉鬆弛/腰椎/脊椎/關"},
-        {"藥品名稱 (英文)": "Biofermin", "中文名稱": "表飛鳴", "目前庫存": 604, "有效期限": "2028-05-31", "用途/備註": "腹瀉/整腸/便祕"},
-        {"藥品名稱 (英文)": "Meclizine 25mg", "中文名稱": "美克利靜", "目前庫存": 948, "有效期限": "2026-09-12", "用途/備註": "暈眩/緩動暈症"}
+        {"藥品名稱 (英文)": "Amoxicillin 500mg", "中文名稱": "安莫西林", "目前庫存": 400, "有效期限": "2028-02-28", "用途/備註": "抗生素"},
+        {"藥品名稱 (英文)": "Fexofenadine 60mg", "中文名稱": "飛敏耐膜衣錠", "目前庫存": -1, "有效期限": "2027-11-25", "用途/備註": "抗組織胺/過敏"},
+        {"藥品名稱 (英文)": "Biofermin", "中文名稱": "表飛鳴", "目前庫存": 604, "有效期限": "2028-05-31", "用途/備註": "腹瀉/整腸/便祕"}
     ])
 
 if "logs" not in st.session_state:
@@ -41,7 +38,6 @@ gsheet_url = st.sidebar.text_input(
 
 if st.sidebar.button("🔄 同步雲端試算表資料"):
     try:
-        # 自動轉換 edit 連結為 csv 匯出網址
         if "/edit" in gsheet_url:
             csv_url = gsheet_url.split("/edit")[0] + "/export?format=csv"
         else:
@@ -54,19 +50,6 @@ if st.sidebar.button("🔄 同步雲端試算表資料"):
     except Exception as e:
         st.sidebar.error(f"❌ 讀取失敗，請確認共享權限：{e}")
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("📤 上傳本地 CSV / Excel 檔")
-uploaded_file = st.sidebar.file_uploader("手動上傳藥品清單", type=["csv", "xlsx"])
-if uploaded_file is not None:
-    try:
-        if uploaded_file.name.endswith('.csv'):
-            st.session_state.inventory = pd.read_csv(uploaded_file)
-        else:
-            st.session_state.inventory = pd.read_excel(uploaded_file)
-        st.sidebar.success("✅ 檔案載入成功！")
-    except Exception as e:
-        st.sidebar.error(f"❌ 檔案格式錯誤：{e}")
-
 
 # 4. 先進先出 (FIFO) 自動扣庫存函數
 def fifo_deduct(df_inv, drug_eng_name, qty_needed):
@@ -78,7 +61,6 @@ def fifo_deduct(df_inv, drug_eng_name, qty_needed):
     if total_stock < qty_needed:
         return df_inv, False, f"{drug_eng_name} 總庫存不足 (現有: {total_stock}, 需要: {qty_needed})"
     
-    # 依照有效期限由近至遠排序 (先進先出)
     matches = matches.sort_values(by='有效期限')
     rem = qty_needed
     for idx in matches.index:
@@ -102,18 +84,19 @@ if page == "💊 藥品領用與紀錄":
         st.subheader("💊 藥品領用與登記")
         st.caption("點選下方搜尋欄可選擇一種或多種藥品，設定數量與領用日期後即可一次完成登記與庫存扣減。")
         
-        # 1. 領用日期與類別（已新增領用日期選擇器）
         c_date, c_cat = st.columns([1, 1])
         with c_date:
             issue_date = st.date_input("📅 領用日期", value=date.today())
         with c_cat:
             category = st.selectbox("🏷️ 用途分類", ["一般消耗", "公藥使用", "過期報銷", "其他"])
             
-        # 2. 藥品清單選單 (去除重複英文名稱)
-        unique_drugs = st.session_state.inventory.drop_duplicates(subset=['藥品名稱 (英文)'])
+        # 🔑 【核心修正點】：先自動過濾掉「目前庫存 <= 0」的品項批號
+        available_inventory = st.session_state.inventory[st.session_state.inventory['目前庫存'] > 0]
+        
+        # 建立選單選項
         drug_options = [
-            f"{row['藥品名稱 (英文)']} ({row['中文名稱']})" 
-            for _, row in unique_drugs.iterrows()
+            f"{row['藥品名稱 (英文)']} ({row['中文名稱']}) | 效期:{row['有效期限']} (庫存:{row['目前庫存']})" 
+            for _, row in available_inventory.iterrows()
         ]
         
         selected_options = st.multiselect(
@@ -128,17 +111,16 @@ if page == "💊 藥品領用與紀錄":
             st.markdown("---")
             st.markdown("##### 🔢 設定發放數量與細項")
             
-            # 動態建立多項藥品的數量輸入框
             quantities = {}
             for opt in selected_options:
                 drug_eng = opt.split(" (")[0]
-                # 計算該藥品總庫存
-                total_k = st.session_state.inventory[
-                    st.session_state.inventory['藥品名稱 (英文)'] == drug_eng
+                # 計算該藥品可用庫存
+                total_k = available_inventory[
+                    available_inventory['藥品名稱 (英文)'] == drug_eng
                 ]['目前庫存'].sum()
                 
                 q = st.number_input(
-                    f"數量 - {opt} [總庫存: {total_k}]", 
+                    f"數量 - {opt.split(' | ')[0]} [可用庫存: {total_k}]", 
                     min_value=1, 
                     value=1, 
                     step=1, 
@@ -152,15 +134,13 @@ if page == "💊 藥品領用與紀錄":
                 success_all = True
                 messages = []
                 
-                # 執行多筆扣量與日誌紀錄
                 for opt, qty in quantities.items():
                     drug_eng = opt.split(" (")[0]
-                    chinese_name = opt.split(" (")[1].replace(")", "") if "(" in opt else ""
+                    chinese_name = opt.split(" (")[1].split(")")[0] if "(" in opt else ""
                     
                     df_inv, ok, msg = fifo_deduct(st.session_state.inventory, drug_eng, qty)
                     if ok:
                         st.session_state.inventory = df_inv
-                        # 新增日誌 (包含選擇的領用日期與系統登記時間)
                         new_log = pd.DataFrame([{
                             "領用日期": issue_date.strftime("%Y-%m-%d"),
                             "登記時間": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -176,7 +156,7 @@ if page == "💊 藥品領用與紀錄":
                         messages.append(msg)
                 
                 if success_all:
-                    st.success("✅ 藥品領用登記成功！庫存已完成先進先出 (FIFO) 自動扣減。")
+                    st.success("✅ 藥品領用登記成功！庫存已完成扣減。")
                     st.rerun()
                 else:
                     st.error("⚠️ 登記過程發生錯誤：" + "；".join(messages))
@@ -190,7 +170,6 @@ if page == "💊 藥品領用與紀錄":
             height=450
         )
 
-    # 底部顯示發藥紀錄
     st.markdown("---")
     st.subheader("📜 歷史領用與發藥紀錄")
     if not st.session_state.logs.empty:
@@ -202,7 +181,7 @@ if page == "💊 藥品領用與紀錄":
 # --- 頁面 2: 庫存盤點與校正 ---
 elif page == "📦 庫存盤點與校正":
     st.subheader("📦 庫存盤點與資料手動校正")
-    st.caption("您可以直接在下方表格中修改庫存數量、有效期限或新增批號，完成後點擊「儲存盤點結果」。")
+    st.caption("您可以直接在下方表格中修改庫存數量（若將負數修正回正數，選單將重新出現該藥品）。")
     
     edited_df = st.data_editor(
         st.session_state.inventory,
@@ -220,7 +199,6 @@ elif page == "📦 庫存盤點與校正":
 # --- 頁面 3: 雲端報表匯出 ---
 elif page == "☁️ 雲端報表匯出":
     st.subheader("☁️ 報表預覽與匯出")
-    st.caption("匯出排版乾淨、包含「月結算總表」與「每日發藥明細」的 Excel 報表。")
     
     tab_summary, tab_detail = st.tabs(["月結算總表預覽", "每日發藥明細預覽"])
     
@@ -232,7 +210,6 @@ elif page == "☁️ 雲端報表匯出":
         
     st.markdown("---")
     
-    # 匯出 Excel
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         st.session_state.inventory.to_excel(writer, sheet_name="月結算總表", index=False)
