@@ -10,12 +10,34 @@ st.set_page_config(
     layout="wide"
 )
 
-# 資料清洗輔助函數：清理空格並將「目前庫存」強制轉為數字型態
-def clean_inventory_data(df):
-    df.columns = df.columns.str.strip()  # 移除欄位名稱前後空白
-    if '目前庫存' in df.columns:
-        df['目前庫存'] = pd.to_numeric(df['目前庫存'], errors='coerce').fillna(0)
-    return df
+# 輔助函數：清洗與轉化庫存欄位型態
+def clean_and_parse_inventory(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    
+    df_clean = df.copy()
+    # 移除欄位名稱前後空白
+    df_clean.columns = df_clean.columns.astype(str).str.strip()
+    
+    # 尋找庫存欄位名稱
+    stock_col = None
+    for possible_name in ['目前庫存', '庫存', '剩餘量']:
+        if possible_name in df_clean.columns:
+            stock_col = possible_name
+            break
+            
+    # 強制將庫存轉為數字，無法解析的填 0
+    if stock_col:
+        df_clean[stock_col] = pd.to_numeric(df_clean[stock_col], errors='coerce').fillna(0)
+    
+    return df_clean
+
+# 輔助函數：取得可用庫存欄位名稱
+def get_stock_col_name(df):
+    for possible_name in ['目前庫存', '庫存', '剩餘量']:
+        if possible_name in df.columns:
+            return possible_name
+    return '目前庫存'
 
 # 2. 初始化 Session State 資料庫
 if "inventory" not in st.session_state:
@@ -24,9 +46,9 @@ if "inventory" not in st.session_state:
         {"藥品名稱 (英文)": "Actein 600mg", "中文名稱": "愛克痰發泡錠", "目前庫存": 461, "有效期限": "2028-05-31", "用途/備註": "去痰"},
         {"藥品名稱 (英文)": "Amoxicillin 500mg", "中文名稱": "安莫西林", "目前庫存": 400, "有效期限": "2028-02-28", "用途/備註": "抗生素"},
         {"藥品名稱 (英文)": "Fexofenadine 60mg", "中文名稱": "飛敏耐膜衣錠", "目前庫存": -1, "有效期限": "2027-11-25", "用途/備註": "抗組織胺/過敏"},
-        {"藥品名稱 (英文)": "Biofermin", "中文名稱": "表飛鳴", "目前庫存": 604, "有效期限": "2028-05-31", "用途/備註": "腹瀉/整腸/便祕"}
+        {"藥品名稱 (英文)": "Amoxicillin 250mg", "中文名稱": "安莫西林", "目前庫存": 0, "有效期限": "", "用途/備註": "抗生素"}
     ])
-    st.session_state.inventory = clean_inventory_data(raw_df)
+    st.session_state.inventory = clean_and_parse_inventory(raw_df)
 
 if "logs" not in st.session_state:
     st.session_state.logs = pd.DataFrame(columns=[
@@ -52,7 +74,7 @@ if st.sidebar.button("🔄 同步雲端試算表資料"):
             csv_url = gsheet_url
         
         df_cloud = pd.read_csv(csv_url)
-        st.session_state.inventory = clean_inventory_data(df_cloud)
+        st.session_state.inventory = clean_and_parse_inventory(df_cloud)
         st.sidebar.success("✅ 已成功同步雲端資料庫！")
         st.rerun()
     except Exception as e:
@@ -61,25 +83,29 @@ if st.sidebar.button("🔄 同步雲端試算表資料"):
 
 # 4. 先進先出 (FIFO) 自動扣庫存函數
 def fifo_deduct(df_inv, drug_eng_name, qty_needed):
+    stock_col = get_stock_col_name(df_inv)
     matches = df_inv[df_inv['藥品名稱 (英文)'] == drug_eng_name].copy()
     if matches.empty:
         return df_inv, False, f"找不到藥品：{drug_eng_name}"
     
-    total_stock = matches['目前庫存'].sum()
+    total_stock = matches[stock_col].sum()
     if total_stock < qty_needed:
-        return df_inv, False, f"{drug_eng_name} 總庫存不足 (現有: {total_stock}, 需要: {qty_needed})"
+        return df_inv, False, f"{drug_eng_name} 總庫存不足 (現有: {int(total_stock)}, 需要: {qty_needed})"
     
-    matches = matches.sort_values(by='有效期限')
+    # 依有效期限排序（若缺少效期則放最後）
+    if '有效期限' in matches.columns:
+        matches = matches.sort_values(by='有效期限', na_position='last')
+        
     rem = qty_needed
     for idx in matches.index:
-        current_stock = df_inv.at[idx, '目前庫存']
+        current_stock = df_inv.at[idx, stock_col]
         if current_stock >= rem:
-            df_inv.at[idx, '目前庫存'] = current_stock - rem
+            df_inv.at[idx, stock_col] = current_stock - rem
             rem = 0
             break
         else:
             rem -= current_stock
-            df_inv.at[idx, '目前庫存'] = 0
+            df_inv.at[idx, stock_col] = 0
             
     return df_inv, True, "扣減成功"
 
@@ -87,6 +113,10 @@ def fifo_deduct(df_inv, drug_eng_name, qty_needed):
 # --- 頁面 1: 藥品領用與紀錄 ---
 if page == "💊 藥品領用與紀錄":
     col_left, col_right = st.columns([1.3, 1])
+    
+    # 確保當前 inventory 資料已清洗轉化
+    st.session_state.inventory = clean_and_parse_inventory(st.session_state.inventory)
+    stock_col = get_stock_col_name(st.session_state.inventory)
     
     with col_left:
         st.subheader("💊 藥品領用與登記")
@@ -98,17 +128,22 @@ if page == "💊 藥品領用與紀錄":
         with c_cat:
             category = st.selectbox("🏷️ 用途分類", ["一般消耗", "公藥使用", "過期報銷", "其他"])
             
-        # 🔑 【核心過濾】：確保轉為數字後，只篩選「目前庫存 > 0」的品項
-        inventory_df = clean_inventory_data(st.session_state.inventory)
-        st.session_state.inventory = inventory_df
+        # 🔑 【核心邏輯】：嚴格過濾庫存 > 0 的品項才製作下拉選單
+        available_inventory = st.session_state.inventory[st.session_state.inventory[stock_col] > 0]
         
-        available_inventory = inventory_df[inventory_df['目前庫存'] > 0]
-        
-        # 建立選單選項
-        drug_options = [
-            f"{row['藥品名稱 (英文)']} ({row['中文名稱']}) | 效期:{row['有效期限']} (庫存:{int(row['目前庫存'])})" 
-            for _, row in available_inventory.iterrows()
-        ]
+        # 動態生成選單文字 (兼顧缺放效期的情況)
+        drug_options = []
+        for _, row in available_inventory.iterrows():
+            eng_name = str(row.get('藥品名稱 (英文)', '')).strip()
+            chi_name = str(row.get('中文名稱', '')).strip()
+            exp_date = str(row.get('有效期限', '')).strip() if pd.notna(row.get('有效期限')) else ""
+            stk_val = int(row.get(stock_col, 0))
+            
+            if exp_date and exp_date.lower() != 'nan':
+                opt_str = f"{eng_name} ({chi_name}) | 效期:{exp_date} (庫存:{stk_val})"
+            else:
+                opt_str = f"{eng_name} ({chi_name}) (庫存:{stk_val})"
+            drug_options.append(opt_str)
         
         selected_options = st.multiselect(
             "選擇本次領取的所有藥品 (可同時選擇多項)",
@@ -127,7 +162,7 @@ if page == "💊 藥品領用與紀錄":
                 drug_eng = opt.split(" (")[0]
                 total_k = available_inventory[
                     available_inventory['藥品名稱 (英文)'] == drug_eng
-                ]['目前庫存'].sum()
+                ][stock_col].sum()
                 
                 q = st.number_input(
                     f"數量 - {opt.split(' | ')[0]} [可用庫存: {int(total_k)}]", 
@@ -172,7 +207,7 @@ if page == "💊 藥品領用與紀錄":
                     st.error("⚠️ 登記過程發生錯誤：" + "；".join(messages))
 
     with col_right:
-        st.subheader("📋 當前藥品庫存總覽")
+        st.subheader("📋 當前藥品庫存總覽 (含庫存 0)")
         st.dataframe(
             st.session_state.inventory,
             use_container_width=True,
@@ -191,7 +226,7 @@ if page == "💊 藥品領用與紀錄":
 # --- 頁面 2: 庫存盤點與校正 ---
 elif page == "📦 庫存盤點與校正":
     st.subheader("📦 庫存盤點與資料手動校正")
-    st.caption("您可以直接在下方表格中修改庫存數量（若將負數修正回正數，選單將重新出現該藥品）。")
+    st.caption("您可以直接在下方表格中修改庫存數量（補貨將庫存改回 > 0 後，選單會自動恢復顯示）。")
     
     edited_df = st.data_editor(
         st.session_state.inventory,
@@ -201,7 +236,7 @@ elif page == "📦 庫存盤點與校正":
     )
     
     if st.button("💾 儲存盤點校正結果", type="primary"):
-        st.session_state.inventory = clean_inventory_data(edited_df)
+        st.session_state.inventory = clean_and_parse_inventory(edited_df)
         st.success("✅ 庫存資料已成功更新！")
         st.rerun()
 
