@@ -13,7 +13,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# 高對比度與清晰度 CSS（包含修正日曆彈窗顏色）
+# 高對比度與日曆專用 CSS 修正
 st.markdown("""
     <style>
     /* 1. 全域背景與字型 (微軟正黑體 16px) */
@@ -39,12 +39,8 @@ st.markdown("""
         color: #0f172a !important;
         font-weight: 500 !important;
     }
-    section[data-testid="stSidebar"] .stRadio label {
-        font-size: 16px !important;
-        font-weight: 600 !important;
-    }
 
-    /* 4. 下拉選單與輸入框樣式 */
+    /* 4. 下拉選單與普通輸入框樣式 */
     div[data-baseweb="select"] > div {
         background-color: #ffffff !important;
         color: #0f172a !important;
@@ -53,42 +49,55 @@ st.markdown("""
     }
     div[data-baseweb="select"] * {
         color: #0f172a !important;
+    }
+
+    /* 5. 日期輸入框本體 (stDateInput) 強制白底黑字 */
+    div[data-testid="stDateInput"] {
         background-color: transparent !important;
     }
-
-    /* 5. 修正日曆 (Date Picker) 彈窗顏色：強制白底黑字 */
-    div[data-baseweb="popover"], 
-    div[data-baseweb="calendar"], 
-    div[data-baseweb="calendar"] * {
+    div[data-testid="stDateInput"] div[data-baseweb="input"] {
+        background-color: #ffffff !important;
+        border: 1px solid #94a3b8 !important;
+        border-radius: 6px !important;
+    }
+    div[data-testid="stDateInput"] input {
         background-color: #ffffff !important;
         color: #0f172a !important;
+        font-weight: 600 !important;
     }
 
-    /* 日曆中目前選中的日期高亮（深青色底白字） */
+    /* 6. 徹底修正日曆彈窗 (Popover & Calendar) 高對比白底黑字 */
+    div[data-baseweb="popover"],
+    div[data-baseweb="calendar"] {
+        background-color: #ffffff !important;
+        border: 1px solid #cbd5e1 !important;
+        border-radius: 8px !important;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.15) !important;
+    }
+
+    /* 強制日曆內部所有文字（星期、月份、數字）為深黑色 */
+    div[data-baseweb="calendar"] *,
+    div[data-baseweb="calendar"] button,
+    div[data-baseweb="calendar"] div {
+        color: #0f172a !important;
+        background-color: #ffffff !important;
+    }
+
+    /* 日曆日期 hover 效果 */
+    div[data-baseweb="calendar"] button:hover {
+        background-color: #e2e8f0 !important;
+    }
+
+    /* 被選中的日期（標示為綠色背景 + 純白文字） */
     div[data-baseweb="calendar"] [aria-selected="true"],
     div[data-baseweb="calendar"] [aria-selected="true"] * {
         background-color: #0d9488 !important;
         color: #ffffff !important;
+        font-weight: bold !important;
         border-radius: 50% !important;
     }
 
-    span[data-baseweb="tag"] {
-        background-color: #ccfbf1 !important;
-        border: 1px solid #0d9488 !important;
-    }
-    span[data-baseweb="tag"] * {
-        color: #0f766e !important;
-        font-weight: 600 !important;
-    }
-
-    .stTextInput input, .stNumberInput input, .stDateInput input {
-        background-color: #ffffff !important;
-        color: #0f172a !important;
-        border: 1px solid #94a3b8 !important;
-        border-radius: 6px !important;
-    }
-
-    /* 6. 表單卡片背景 */
+    /* 7. 表單與按鈕樣式 */
     div[data-testid="stForm"] {
         background-color: #ffffff !important;
         padding: 24px;
@@ -96,8 +105,6 @@ st.markdown("""
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
         border: 1px solid #cbd5e1 !important;
     }
-
-    /* 7. 按鈕樣式 */
     .stButton > button, div[data-testid="stForm"] button {
         font-size: 16px !important;
         font-family: 'Microsoft JhengHei', '微軟正黑體', sans-serif !important;
@@ -222,7 +229,7 @@ if menu == "💊 多項藥品領用登記":
                 except Exception as e:
                     st.error(f"❌ 更新失敗：{e}")
 
-# 頁面 2：新增藥品進貨/補貨登記 (含容錯機制)
+# 頁面 2：新增藥品進貨/補貨登記
 elif menu == "📥 藥品進貨/補貨登記":
     st.header("📥 藥品購入與進貨登記")
     st.caption("在此輸入買入的藥品數量、新批號與有效期限，系統將自動累加庫存。")
@@ -281,7 +288,6 @@ elif menu == "📥 藥品進貨/補貨登記":
                     df_save = df_inventory.drop(columns=['display_name'])
                     conn.update(worksheet="庫存", data=df_save)
                     
-                    # 嘗試寫入「進貨紀錄」分頁
                     try:
                         try:
                             df_inbound_existing = conn.read(worksheet="進貨紀錄", ttl=0)
