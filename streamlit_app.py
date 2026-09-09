@@ -30,7 +30,7 @@ st.markdown("""
         opacity: 1 !important;
     }
 
-    /* 3. 側邊欄樣式與選項強化 (淺灰背景 + 深色清晰字體) */
+    /* 3. 側邊欄樣式與選項強化 */
     section[data-testid="stSidebar"] {
         background-color: #e2e8f0 !important;
         border-right: 2px solid #cbd5e1 !important;
@@ -44,7 +44,7 @@ st.markdown("""
         font-weight: 600 !important;
     }
 
-    /* 4. 多選選單與下拉選單 (純白背景 + 深色字) */
+    /* 4. 下拉選單與輸入框樣式 */
     div[data-baseweb="select"] > div {
         background-color: #ffffff !important;
         color: #0f172a !important;
@@ -63,7 +63,6 @@ st.markdown("""
         color: #0f172a !important;
     }
 
-    /* 已選擇的藥品標籤晶片 */
     span[data-baseweb="tag"] {
         background-color: #ccfbf1 !important;
         border: 1px solid #0d9488 !important;
@@ -73,15 +72,14 @@ st.markdown("""
         font-weight: 600 !important;
     }
 
-    /* 5. 輸入框樣式 */
-    .stTextInput input, .stNumberInput input {
+    .stTextInput input, .stNumberInput input, .stDateInput input {
         background-color: #ffffff !important;
         color: #0f172a !important;
         border: 1px solid #94a3b8 !important;
         border-radius: 6px !important;
     }
 
-    /* 6. 卡片表單背景 */
+    /* 5. 表單卡片背景 */
     div[data-testid="stForm"] {
         background-color: #ffffff !important;
         padding: 24px;
@@ -90,7 +88,7 @@ st.markdown("""
         border: 1px solid #cbd5e1 !important;
     }
 
-    /* 7. 按鈕樣式 (綠底白字) */
+    /* 6. 按鈕樣式 */
     .stButton > button, div[data-testid="stForm"] button {
         font-size: 16px !important;
         font-family: 'Microsoft JhengHei', '微軟正黑體', sans-serif !important;
@@ -136,7 +134,7 @@ menu = st.sidebar.radio(
 
 df_inventory = load_data()
 
-# 頁面 1：多項藥品領用登記
+# 頁面 1：多項藥品領用登記 (支援日期補登)
 if menu == "💊 多項藥品領用登記":
     st.header("📋 批量藥品領用登記")
     df_inventory['display_name'] = (
@@ -154,8 +152,21 @@ if menu == "💊 多項藥品領用登記":
 
     if selected_items:
         st.markdown("---")
-        st.subheader("✏️ 請輸入領用數量")
+        st.subheader("✏️ 請輸入領用資訊與數量")
         with st.form("batch_checkout_form"):
+            col_d1, col_d2 = st.columns([1, 2])
+            with col_d1:
+                # 預設為今天，若為補登可自由改選過去日期
+                record_date = st.date_input(
+                    "📅 實際領用/補登日期：", 
+                    value=datetime.now().date(),
+                    help="若為補登昨日或過去的紀錄，請直接在此修改日期"
+                )
+            with col_d2:
+                remarks = st.text_input("領用備註/用途：", placeholder="例如：衛保組公用 / 門診備用 (補登記)")
+
+            st.markdown("<hr style='margin: 12px 0;'>", unsafe_allow_html=True)
+
             quantities = {}
             for item in selected_items:
                 row_data = df_inventory[df_inventory['display_name'] == item].iloc[0]
@@ -169,11 +180,11 @@ if menu == "💊 多項藥品領用登記":
                     quantities[item] = qty
                 st.markdown("<hr style='margin: 8px 0;'>", unsafe_allow_html=True)
 
-            remarks = st.text_input("領用備註/用途：", placeholder="例如：衛保組公用 / 門診備用")
             submit_btn = st.form_submit_button("✅ 完成登記並更新庫存")
 
             if submit_btn:
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                # 組合選擇的日期與當前時間
+                log_time_str = f"{record_date.strftime('%Y-%m-%d')} {datetime.now().strftime('%H:%M:%S')}"
                 new_logs = []
                 for item, qty in quantities.items():
                     idx = df_inventory[df_inventory['display_name'] == item].index[0]
@@ -181,7 +192,7 @@ if menu == "💊 多項藥品領用登記":
                     new_stock = max(0, old_stock - qty)
                     df_inventory.loc[idx, '目前庫存'] = new_stock
                     new_logs.append({
-                        "領用時間": now_str,
+                        "領用時間": log_time_str,
                         "藥品名稱": df_inventory.loc[idx, '藥品名稱(英文)'],
                         "中文名稱": df_inventory.loc[idx, '中文名稱'],
                         "領用數量": qty,
@@ -198,7 +209,7 @@ if menu == "💊 多項藥品領用登記":
                     except Exception:
                         df_logs_updated = pd.DataFrame(new_logs)
                     conn.update(worksheet="領用紀錄", data=df_logs_updated)
-                    st.success("🎉 批量領用登記成功！庫存與 Log 已更新。")
+                    st.success(f"🎉 領用登記成功！紀錄日期為 `{record_date}`，庫存與 Log 已更新。")
                     st.cache_data.clear()
                     st.rerun()
                 except Exception as e:
