@@ -101,7 +101,7 @@ def load_data():
         st.error(f"❌ 讀取『庫存』試算表失敗，請確認 Google Sheet 中有『庫存』工作表。細節：{e}")
         st.stop()
 
-# 寫入 Log 輔助函式（自動相容「記錄」與「紀錄」兩種命名）
+# 寫入 Log 輔助函式
 def append_to_log_sheet(connection, possible_sheet_names, new_logs_df):
     for sheet_name in possible_sheet_names:
         try:
@@ -145,7 +145,7 @@ menu = st.sidebar.radio(
 df_inventory = load_data()
 
 # -----------------------------------------------------------------------------
-# 頁面 1：多項藥品領用登記 (附雙重預覽與確認)
+# 頁面 1：多項藥品領用登記
 # -----------------------------------------------------------------------------
 if menu == "💊 多項藥品領用登記":
     st.header("📋 批量藥品領用登記")
@@ -189,7 +189,6 @@ if menu == "💊 多項藥品領用登記":
                 st.markdown("<hr style='margin: 8px 0;'>", unsafe_allow_html=True)
 
             if st.button("🔍 預覽並檢查領用明細", type="primary"):
-                # 暫存資料並進入確認階段
                 st.session_state.checkout_data = {
                     "record_date": record_date,
                     "remarks": remarks,
@@ -263,7 +262,7 @@ if menu == "💊 多項藥品領用登記":
                 st.rerun()
 
 # -----------------------------------------------------------------------------
-# 頁面 2：新增藥品進貨/補貨登記 (附雙重預覽與確認)
+# 頁面 2：新增藥品進貨/補貨登記
 # -----------------------------------------------------------------------------
 elif menu == "📥 藥品進貨/補貨登記":
     st.header("📥 藥品購入與進貨登記")
@@ -357,7 +356,7 @@ elif menu == "📥 藥品進貨/補貨登記":
                 st.rerun()
 
 # -----------------------------------------------------------------------------
-# 頁面 3：紀錄修改與庫存微調 (解決錯誤鍵入問題)
+# 頁面 3：紀錄修改與庫存微調
 # -----------------------------------------------------------------------------
 elif menu == "🛠️ 紀錄修改與庫存微調":
     st.header("🛠️ 歷史紀錄更正與庫存校正")
@@ -365,18 +364,15 @@ elif menu == "🛠️ 紀錄修改與庫存微調":
 
     tab1, tab2 = st.tabs(["✏️ 領用紀錄更正/撤銷", "🎯 直接盤點庫存校正"])
 
-    # Tab 1: 領用紀錄修改與衝銷
     with tab1:
         st.subheader("更正歷史領用紀錄")
         df_logs, sheet_used = get_log_sheet_data(conn, ["領用記錄", "領用紀錄"])
         
         if df_logs is not None and not df_logs.empty:
-            # 顯示最近 20 筆紀錄
             st.write(f"📋 目前從雲端『{sheet_used}』讀取到的最近歷史紀錄（顯示前 20 筆）：")
             recent_logs = df_logs.tail(20).copy().iloc[::-1]
             st.dataframe(recent_logs, use_container_width=True)
 
-            # 選擇欲修改的項目
             log_indices = recent_logs.index.tolist()
             log_options = [
                 f"行號 {idx+2}: [{recent_logs.loc[idx, '領用時間']}] {recent_logs.loc[idx, '藥品名稱']} - 原領用量: {recent_logs.loc[idx, '領用數量']}"
@@ -402,24 +398,19 @@ elif menu == "🛠️ 紀錄修改與庫存微調":
                     btn_update_log = st.button("💾 更新此筆領用數量並調整庫存", type="primary")
                     btn_delete_log = st.button("🗑️ 徹底撤銷此筆紀錄（數量全數加回庫存）")
 
-                # 動作 A：更正數量
                 if btn_update_log:
-                    diff = new_log_qty - orig_qty # 領用增加則庫存要再扣，領用減少則庫存要加回
-                    # 尋找對應庫存列
+                    diff = new_log_qty - orig_qty
                     inv_match = df_inventory[df_inventory['藥品名稱(英文)'] == med_name]
                     if not inv_match.empty:
                         inv_idx = inv_match.index[0]
                         curr_stk = int(df_inventory.loc[inv_idx, '目前庫存'])
                         adjusted_stk = max(0, curr_stk - diff)
                         
-                        # 更新庫存 DataFrame
                         df_inventory.loc[inv_idx, '目前庫存'] = adjusted_stk
-                        # 更新 Log DataFrame
                         df_logs.loc[selected_idx, '領用數量'] = new_log_qty
                         df_logs.loc[selected_idx, '剩餘庫存'] = adjusted_stk
                         df_logs.loc[selected_idx, '備註'] = str(df_logs.loc[selected_idx, '備註']) + " (已更正)"
 
-                        # 上傳雲端
                         df_save_inv = df_inventory.drop(columns=['display_name'], errors='ignore')
                         conn.update(worksheet="庫存", data=df_save_inv)
                         conn.update(worksheet=sheet_used, data=df_logs)
@@ -430,13 +421,12 @@ elif menu == "🛠️ 紀錄修改與庫存微調":
                     else:
                         st.error("❌ 找不到對應的藥品庫存項目。")
 
-                # 動作 B：撤銷該紀錄
                 if btn_delete_log:
                     inv_match = df_inventory[df_inventory['藥品名稱(英文)'] == med_name]
                     if not inv_match.empty:
                         inv_idx = inv_match.index[0]
                         curr_stk = int(df_inventory.loc[inv_idx, '目前庫存'])
-                        adjusted_stk = curr_stk + orig_qty # 加回庫存
+                        adjusted_stk = curr_stk + orig_qty
 
                         df_inventory.loc[inv_idx, '目前庫存'] = adjusted_stk
                         df_logs = df_logs.drop(index=selected_idx)
@@ -451,7 +441,6 @@ elif menu == "🛠️ 紀錄修改與庫存微調":
         else:
             st.info("目前尚未有任何領用紀錄。")
 
-    # Tab 2: 直接庫存盤點與校正
     with tab2:
         st.subheader("🎯 直接盤點與庫存微調")
         st.caption("用於盤點發現數量不符時，直接手動修正最終庫存數。")
@@ -488,7 +477,7 @@ elif menu == "📦 當前庫存總覽":
     st.dataframe(df_inventory.drop(columns=['display_name'], errors='ignore'), use_container_width=True, hide_index=True)
 
 # -----------------------------------------------------------------------------
-# 頁面 5：用藥月報與學期統計表
+# 頁面 5：用藥月報與學期統計表 (含每日領用自動匯入修正)
 # -----------------------------------------------------------------------------
 elif menu == "📊 用藥月報與學期統計表":
     st.header("📊 國立臺北大學衛保組 藥品使用月報與全學期統計表")
@@ -499,24 +488,81 @@ elif menu == "📊 用藥月報與學期統計表":
     with col_sel2:
         selected_month = st.selectbox("統計月份", ["9月", "10月", "11月", "12月", "1月"], index=0)
 
-    days = [f"9/{d}" for d in [1, 2, 3, 4, 7, 8, 9, 10, 11, 14, 15, 16, 17, 18, 21, 22, 23, 24, 25, 28, 29, 30]]
+    month_num = int(selected_month.replace("月", ""))
+    days_list = [1, 2, 3, 4, 7, 8, 9, 10, 11, 14, 15, 16, 17, 18, 21, 22, 23, 24, 25, 28, 29, 30]
+    days = [f"{month_num}/{d}" for d in days_list]
     
+    # 讀取並彙整領用紀錄中的「每日領用量」
+    df_logs, _ = get_log_sheet_data(conn, ["領用記錄", "領用紀錄"])
+    daily_usage_map = {} # (藥品英文名/中文名, "9/7") -> 數量
+
+    if df_logs is not None and not df_logs.empty:
+        try:
+            df_logs['dt'] = pd.to_datetime(df_logs['領用時間'], errors='coerce')
+            # 濾出選取月份的紀錄
+            df_logs_filtered = df_logs[df_logs['dt'].dt.month == month_num].copy()
+            df_logs_filtered['day_str'] = df_logs_filtered['dt'].apply(lambda x: f"{x.month}/{x.day}" if pd.notnull(x) else "")
+
+            # 依 藥品名稱 與 day_str 進行彙整
+            grouped = df_logs_filtered.groupby(['藥品名稱', 'day_str'])['領用數量'].sum().reset_index()
+            for _, g_row in grouped.iterrows():
+                med_name = str(g_row['藥品名稱']).strip()
+                d_str = str(g_row['day_str']).strip()
+                qty = int(g_row['領用數量'])
+                daily_usage_map[(med_name, d_str)] = qty
+
+            # 依 中文名稱 補強備用
+            if '中文名稱' in df_logs_filtered.columns:
+                grouped_cht = df_logs_filtered.groupby(['中文名稱', 'day_str'])['領用數量'].sum().reset_index()
+                for _, g_row in grouped_cht.iterrows():
+                    cht_name = str(g_row['中文名稱']).strip()
+                    d_str = str(g_row['day_str']).strip()
+                    qty = int(g_row['領用數量'])
+                    if cht_name:
+                        daily_usage_map[(cht_name, d_str)] = qty
+        except Exception as e:
+            st.warning(f"⚠️ 讀取領用紀錄計算每日用量時提醒：{e}")
+
     report_rows = []
-    for _, row in df_inventory.iterrows():
-        eng_name = str(row.get('藥品名稱(英文)', ''))
-        cht_name = str(row.get('中文名稱', ''))
+    excel_day_qty_list = [] # 記錄所有列的每日數量
+
+    for idx, row in df_inventory.iterrows():
+        eng_name = str(row.get('藥品名稱(英文)', '')).strip()
+        cht_name = str(row.get('中文名稱', '')).strip()
         combined_name = f"{eng_name} ({cht_name})" if cht_name else eng_name
         stock = int(row.get('目前庫存', 0))
         expiry = str(row.get('有效期限', ''))
 
+        # 計算該藥品當月每日領用量
+        day_quantities = []
         r_dict = {"藥品名稱\n(商品名/中文)": combined_name, "115年8月\n剩餘量": stock}
+        
         for d in days:
-            r_dict[d] = 0
+            # 優先以英文名稱對應，若無則嘗試中文名稱
+            qty_used = daily_usage_map.get((eng_name, d), 0)
+            if qty_used == 0 and cht_name:
+                qty_used = daily_usage_map.get((cht_name, d), 0)
+            
+            r_dict[d] = qty_used
+            day_quantities.append(qty_used)
+
+        excel_day_qty_list.append(day_quantities)
+        monthly_used_sum = sum(day_quantities)
+
         r_dict.update({
-            "當月使用\n總量": 0, "購入量": 0, "過期報銷": 0, "公藥使用": 0,
-            "115年9月\n期末剩餘量": stock, "實體盤點\n數量": stock, "有效期限": expiry,
-            "9月\n消耗量": 0, "10月\n消耗量": 0, "11月\n消耗量": 0, "12月\n消耗量": 0, "1月\n消耗量": 0,
-            "全學期\n使用總量": 0
+            "當月使用\n總量": monthly_used_sum, 
+            "購入量": 0, 
+            "過期報銷": 0, 
+            "公藥使用": 0,
+            "115年9月\n期末剩餘量": stock, 
+            "實體盤點\n數量": stock, 
+            "有效期限": expiry,
+            "9月\n消耗量": monthly_used_sum if month_num == 9 else 0, 
+            "10月\n消耗量": monthly_used_sum if month_num == 10 else 0, 
+            "11月\n消耗量": monthly_used_sum if month_num == 11 else 0, 
+            "12月\n消耗量": monthly_used_sum if month_num == 12 else 0, 
+            "1月\n消耗量": monthly_used_sum if month_num == 1 else 0,
+            "全學期\n使用總量": monthly_used_sum
         })
         report_rows.append(r_dict)
 
@@ -524,12 +570,12 @@ elif menu == "📊 用藥月報與學期統計表":
     st.subheader(f"📄 {selected_year} 上學期用藥月報表 ({selected_month}) 預覽")
     st.dataframe(df_report, use_container_width=True, hide_index=True)
 
-    # 產生 Excel 檔
+    # 產生並美化 Excel 檔
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = f"115年{selected_month}用藥月報表"
 
-    title_text = f"國立臺北大學衛保組 {selected_year}上學期藥品使用月報與全學期統計表 ({selected_year}9月起)"
+    title_text = f"國立臺北大學衛保組 {selected_year}上學期藥品使用月報與全學期統計表 ({selected_year}{selected_month}起)"
     ws.append([title_text])
     ws.cell(row=1, column=1).font = Font(name="微軟正黑體", size=13, bold=True, color="1F4E78")
 
@@ -584,16 +630,23 @@ elif menu == "📊 用藥月報與學期統計表":
 
     for idx, row in df_report.iterrows():
         r_idx = idx + 3
+        day_qtys = excel_day_qty_list[idx]
+
+        m9_val = f"=Y{r_idx}" if month_num == 9 else 0
+        m10_val = f"=Y{r_idx}" if month_num == 10 else 0
+        m11_val = f"=Y{r_idx}" if month_num == 11 else 0
+        m12_val = f"=Y{r_idx}" if month_num == 12 else 0
+        m1_val = f"=Y{r_idx}" if month_num == 1 else 0
+
         data_row = [
             row["藥品名稱\n(商品名/中文)"], row["115年8月\n剩餘量"],
-            *[0]*len(days),
+            *day_qtys, # 帶入真實加總的每日領用數據
             f"=SUM(C{r_idx}:X{r_idx})",
             0, 0, 0,
             f"=B{r_idx}+Z{r_idx}-Y{r_idx}-AA{r_idx}-AB{r_idx}",
             f"=AC{r_idx}",
             row["有效期限"],
-            f"=Y{r_idx}",
-            0, 0, 0, 0,
+            m9_val, m10_val, m11_val, m12_val, m1_val,
             f"=SUM(AF{r_idx}:AJ{r_idx})"
         ]
         ws.append(data_row)
