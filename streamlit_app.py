@@ -1,9 +1,13 @@
 import streamlit as st
 import pandas as pd
+import os
 from datetime import datetime, date
 import io
 
-# 1. 頁面基本配置
+# 1. 本地硬碟持久化檔案名稱設定
+INV_FILE = "inventory_data.csv"
+LOG_FILE = "logs_data.csv"
+
 st.set_page_config(
     page_title="衛保組管理系統",
     page_icon="💊",
@@ -18,15 +22,15 @@ def clean_and_parse_inventory(df):
     df_clean = df.copy()
     df_clean.columns = df_clean.columns.astype(str).str.strip()
     
-    stock_col = None
-    for possible_name in ['115年8月剩餘量', '期初庫存', '目前庫存', '庫存', '剩餘量']:
-        if possible_name in df_clean.columns:
-            stock_col = possible_name
-            break
-            
-    if stock_col:
+    stock_col = get_init_stock_col(df_clean)
+    if stock_col in df_clean.columns:
         df_clean[stock_col] = pd.to_numeric(df_clean[stock_col], errors='coerce').fillna(0)
     
+    if '購入量' not in df_clean.columns:
+        df_clean['購入量'] = 0
+    else:
+        df_clean['購入量'] = pd.to_numeric(df_clean['購入量'], errors='coerce').fillna(0)
+        
     return df_clean
 
 def get_init_stock_col(df):
@@ -35,21 +39,32 @@ def get_init_stock_col(df):
             return possible_name
     return '115年8月剩餘量'
 
-# 2. 初始化 Session State 資料庫
+# 自動儲存至本地硬碟 CSV
+def save_data():
+    st.session_state.inventory.to_csv(INV_FILE, index=False)
+    st.session_state.logs.to_csv(LOG_FILE, index=False)
+
+# 2. 初始化 Session State 資料庫（優先從本地 CSV 讀取歷史資料）
 if "inventory" not in st.session_state:
-    raw_df = pd.DataFrame([
-        {"藥品名稱": "Actein 600mg (愛克痰發泡錠)", "115年8月剩餘量": 168, "購入量": 0, "有效期限": "2028-04-30"},
-        {"藥品名稱": "Actein 600mg (愛克痰發泡錠)", "115年8月剩餘量": 461, "購入量": 0, "有效期限": "2028-05-31"},
-        {"藥品名稱": "Amoxicillin 500mg (安莫西林)", "115年8月剩餘量": 400, "購入量": 0, "有效期限": "2028-02-28"},
-        {"藥品名稱": "Fexofenadine 60mg (飛敏耐膜衣錠)", "115年8月剩餘量": 0, "購入量": 0, "有效期限": "2027-11-25"},
-        {"藥品名稱": "Biofermin (表飛鳴)", "115年8月剩餘量": 604, "購入量": 0, "有效期限": "2028-05-31"}
-    ])
-    st.session_state.inventory = clean_and_parse_inventory(raw_df)
+    if os.path.exists(INV_FILE):
+        st.session_state.inventory = pd.read_csv(INV_FILE)
+    else:
+        raw_df = pd.DataFrame([
+            {"藥品名稱": "Actein 600mg (愛克痰發泡錠)", "115年8月剩餘量": 168, "購入量": 0, "有效期限": "2028-04-30"},
+            {"藥品名稱": "Actein 600mg (愛克痰發泡錠)", "115年8月剩餘量": 461, "購入量": 0, "有效期限": "2028-05-31"},
+            {"藥品名稱": "Amoxicillin 500mg (安莫西林)", "115年8月剩餘量": 400, "購入量": 0, "有效期限": "2028-02-28"},
+            {"藥品名稱": "Fexofenadine 60mg (飛敏耐膜衣錠)", "115年8月剩餘量": 0, "購入量": 0, "有效期限": "2027-11-25"},
+            {"藥品名稱": "Biofermin (表飛鳴)", "115年8月剩餘量": 604, "購入量": 0, "有效期限": "2028-05-31"}
+        ])
+        st.session_state.inventory = clean_and_parse_inventory(raw_df)
 
 if "logs" not in st.session_state:
-    st.session_state.logs = pd.DataFrame(columns=[
-        "領用日期", "登記時間", "藥品名稱", "領用數量", "用途分類", "備註"
-    ])
+    if os.path.exists(LOG_FILE):
+        st.session_state.logs = pd.read_csv(LOG_FILE)
+    else:
+        st.session_state.logs = pd.DataFrame(columns=[
+            "領用日期", "登記時間", "藥品名稱", "領用數量", "用途分類", "備註"
+        ])
 
 # 3. 側邊欄控制與資料同步
 st.sidebar.title("🏥 衛保組管理系統")
@@ -71,20 +86,21 @@ if st.sidebar.button("🔄 同步雲端試算表資料"):
         
         df_cloud = pd.read_csv(csv_url)
         st.session_state.inventory = clean_and_parse_inventory(df_cloud)
-        st.sidebar.success("✅ 已成功同步雲端資料庫！")
+        save_data()
+        st.sidebar.success("✅ 已成功同步雲端資料庫並覆寫存檔！")
         st.rerun()
     except Exception as e:
         st.sidebar.error(f"❌ 讀取失敗，請確認共享權限：{e}")
 
 
-# 4. 先進先出 (FIFO) 自動扣庫存函數
+# 4. 先進先出 (FIFO) 扣減庫存
 def fifo_deduct(df_inv, drug_eng_name, qty_needed):
     stock_col = get_init_stock_col(df_inv)
     matches = df_inv[df_inv['藥品名稱'].str.contains(drug_eng_name, regex=False, na=False)].copy()
     if matches.empty:
         return df_inv, False, f"找不到藥品：{drug_eng_name}"
     
-    total_stock = matches[stock_col].sum() + matches.get('購入量', 0).sum()
+    total_stock = matches[stock_col].sum() + matches['購入量'].sum()
     if total_stock < qty_needed:
         return df_inv, False, f"{drug_eng_name} 總庫存不足 (現有: {int(total_stock)}, 需要: {qty_needed})"
     
@@ -105,7 +121,7 @@ def fifo_deduct(df_inv, drug_eng_name, qty_needed):
     return df_inv, True, "扣減成功"
 
 
-# 5. 月報表動態加減統計計算引擎
+# 5. 月報表動態加減統計計算
 def build_monthly_report_analysis(inv_df, logs_df):
     report_df = inv_df.copy()
     init_col = get_init_stock_col(report_df)
@@ -171,7 +187,9 @@ if page == "💊 藥品領用與登記":
                 ["📋 一般消耗/學生領用", "🏛️ 公藥使用", "🗑️ 過期報銷", "其他"]
             )
             
-        available_inventory = st.session_state.inventory[st.session_state.inventory[stock_col] > 0]
+        available_inventory = st.session_state.inventory[
+            (st.session_state.inventory[stock_col] + st.session_state.inventory['購入量']) > 0
+        ]
         
         drug_options = []
         for _, row in available_inventory.iterrows():
@@ -239,7 +257,8 @@ if page == "💊 藥品領用與登記":
                         messages.append(msg)
                 
                 if success_all:
-                    st.success("✅ 藥品領用登記成功！")
+                    save_data()  # 寫入硬碟
+                    st.success("✅ 藥品領用登記成功且已自動存檔！")
                     st.rerun()
                 else:
                     st.error("⚠️ 登記過程發生錯誤：" + "；".join(messages))
@@ -249,20 +268,17 @@ if page == "💊 藥品領用與登記":
         st.dataframe(st.session_state.inventory, use_container_width=True, hide_index=True, height=450)
 
 
-# --- 頁面 2: 📥 藥品進貨/入庫登記 (全新功能) ---
+# --- 頁面 2: 📥 藥品進貨/入庫登記 ---
 elif page == "📥 藥品進貨/入庫登記":
     st.subheader("📥 藥品新購入量登記")
-    st.caption("選擇既存藥品填入購入數量，系統會自動加算至月報表中的『購入量』與庫存；若為全新藥品可直接建立新紀錄。")
+    st.caption("輸入購入數量會自動存檔並加算至月報表中的『購入量』與庫存。")
     
     st.session_state.inventory = clean_and_parse_inventory(st.session_state.inventory)
-    
-    # 取得現有所有不重複藥品名稱
     existing_drugs = st.session_state.inventory['藥品名稱'].dropna().unique().tolist()
     
     c1, c2 = st.columns([1, 1])
     with c1:
         entry_type = st.radio("選擇進貨類型", ["已有藥品進貨 (更新購入量)", "➕ 建立全新的藥品/新批號"])
-        
     with c2:
         purchase_date = st.date_input("📅 進貨日期", value=date.today())
         
@@ -273,21 +289,17 @@ elif page == "📥 藥品進貨/入庫登記":
         purchased_qty = st.number_input("📦 本次購入數量", min_value=1, value=100, step=10)
         
         if st.button("➕ 確認登記進貨量", type="primary"):
-            # 尋找該藥品列，更新『購入量』欄位
-            if '購入量' not in st.session_state.inventory.columns:
-                st.session_state.inventory['購入量'] = 0
-                
             match_indices = st.session_state.inventory[st.session_state.inventory['藥品名稱'] == target_drug].index
             if not match_indices.empty:
-                # 預設更新至第一筆該藥品，或累加購入量
                 idx = match_indices[0]
                 cur_p = pd.to_numeric(st.session_state.inventory.at[idx, '購入量'], errors='coerce')
                 st.session_state.inventory.at[idx, '購入量'] = (0 if pd.na(cur_p) else cur_p) + purchased_qty
                 
-                st.success(f"✅ 已成功為【{target_drug}】新增購入量 {purchased_qty}！")
+                save_data()  # 寫入硬碟
+                st.success(f"✅ 已成功為【{target_drug}】新增購入量 {purchased_qty} 並已存檔！")
                 st.rerun()
                 
-    else: # 建立全新藥品/新批號
+    else:
         new_drug_name = st.text_input("輸入新藥品名稱 (英/中)", placeholder="例如：Panadol 500mg (普拿疼)")
         new_exp_date = st.date_input("🗓️ 有效期限", value=date(2028, 12, 31))
         new_purchased_qty = st.number_input("📦 進貨購入數量", min_value=1, value=100, step=10)
@@ -304,7 +316,8 @@ elif page == "📥 藥品進貨/入庫登記":
                     "有效期限": new_exp_date.strftime("%Y-%m-%d")
                 }
                 st.session_state.inventory = pd.concat([st.session_state.inventory, pd.DataFrame([new_row])], ignore_index=True)
-                st.success(f"✅ 已成功新增藥品【{new_drug_name}】並登記購入量 {new_purchased_qty}！")
+                save_data()  # 寫入硬碟
+                st.success(f"✅ 已成功新增藥品【{new_drug_name}】並存檔！")
                 st.rerun()
 
 
@@ -322,7 +335,8 @@ elif page == "📦 庫存盤點與校正":
     
     if st.button("💾 儲存盤點校正結果", type="primary"):
         st.session_state.inventory = clean_and_parse_inventory(edited_df)
-        st.success("✅ 庫存資料已成功更新！")
+        save_data()  # 寫入硬碟
+        st.success("✅ 庫存資料已成功更新並存檔！")
         st.rerun()
 
 
