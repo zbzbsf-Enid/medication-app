@@ -13,7 +13,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# 高對比度與清晰度 CSS
+# 高對比度與清晰度 CSS（包含修正日曆彈窗顏色）
 st.markdown("""
     <style>
     /* 1. 全域背景與字型 (微軟正黑體 16px) */
@@ -55,12 +55,21 @@ st.markdown("""
         color: #0f172a !important;
         background-color: transparent !important;
     }
-    div[data-baseweb="popover"] {
-        background-color: #ffffff !important;
-    }
-    div[data-baseweb="popover"] * {
+
+    /* 5. 修正日曆 (Date Picker) 彈窗顏色：強制白底黑字 */
+    div[data-baseweb="popover"], 
+    div[data-baseweb="calendar"], 
+    div[data-baseweb="calendar"] * {
         background-color: #ffffff !important;
         color: #0f172a !important;
+    }
+
+    /* 日曆中目前選中的日期高亮（深青色底白字） */
+    div[data-baseweb="calendar"] [aria-selected="true"],
+    div[data-baseweb="calendar"] [aria-selected="true"] * {
+        background-color: #0d9488 !important;
+        color: #ffffff !important;
+        border-radius: 50% !important;
     }
 
     span[data-baseweb="tag"] {
@@ -79,7 +88,7 @@ st.markdown("""
         border-radius: 6px !important;
     }
 
-    /* 5. 表單卡片背景 */
+    /* 6. 表單卡片背景 */
     div[data-testid="stForm"] {
         background-color: #ffffff !important;
         padding: 24px;
@@ -88,7 +97,7 @@ st.markdown("""
         border: 1px solid #cbd5e1 !important;
     }
 
-    /* 6. 按鈕樣式 */
+    /* 7. 按鈕樣式 */
     .stButton > button, div[data-testid="stForm"] button {
         font-size: 16px !important;
         font-family: 'Microsoft JhengHei', '微軟正黑體', sans-serif !important;
@@ -280,7 +289,7 @@ elif menu == "📥 藥品進貨/補貨登記":
                         except Exception:
                             df_inbound_updated = pd.DataFrame([purchase_log])
                         conn.update(worksheet="進貨紀錄", data=df_inbound_updated)
-                    except Exception as log_err:
+                    except Exception:
                         st.warning("⚠️ 庫存已成功更新！但寫入『進貨紀錄』分頁失敗，請確認 Google 試算表中是否已建立名為 『進貨紀錄』 的分頁。")
 
                     st.success(f"🎉 進貨完成！`{selected_med}` 庫存已由 {old_qty} 增加至 {new_qty}，批號更新為 `{new_batch}`。")
