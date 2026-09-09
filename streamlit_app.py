@@ -101,6 +101,64 @@ def load_data():
         st.error(f"❌ 讀取『庫存』試算表失敗，請確認 Google Sheet 中有『庫存』工作表。細節：{e}")
         st.stop()
 
+# 💡 效期檢查與自動通知功能
+def check_expiration_warnings(df):
+    if df is None or df.empty or '有效期限' not in df.columns:
+        return
+    
+    today = datetime.now().date()
+    expiring_soon = []
+    already_expired = []
+
+    for _, row in df.iterrows():
+        exp_str = row.get('有效期限')
+        if pd.notna(exp_str) and str(exp_str).strip() != '' and str(exp_str).lower() != 'nan':
+            try:
+                exp_date = pd.to_datetime(exp_str).date()
+                days_left = (exp_date - today).days
+
+                eng_name = str(row.get('藥品名稱(英文)', '')).strip()
+                cht_name = str(row.get('中文名稱', '')).strip()
+                med_name = f"{eng_name} ({cht_name})" if cht_name else eng_name
+                batch = str(row.get('批號', '無'))
+                stock = int(row.get('目前庫存', 0))
+
+                if days_left < 0:
+                    already_expired.append({
+                        'name': med_name,
+                        'batch': batch,
+                        'expiry': exp_date,
+                        'stock': stock,
+                        'days': abs(days_left)
+                    })
+                elif 0 <= days_left <= 30:
+                    expiring_soon.append({
+                        'name': med_name,
+                        'batch': batch,
+                        'expiry': exp_date,
+                        'stock': stock,
+                        'days': days_left
+                    })
+            except Exception:
+                continue
+
+    # 顯示通知區塊
+    if already_expired:
+        with st.expander("🚨 【嚴重警告】以下藥品已過期！請立即處置與報銷", expanded=True):
+            for item in already_expired:
+                st.error(
+                    f"❌ **{item['name']}** ｜ 批號：`{item['batch']}` ｜ 有效期限：`{item['expiry']}` "
+                    f"（已過期 **{item['days']}** 天） ｜ 當前庫存：`{item['stock']}`"
+                )
+
+    if expiring_soon:
+        with st.expander("⚠️ 【到期預警】以下藥品將於 1 個月內到期！請留意使用狀況", expanded=True):
+            for item in expiring_soon:
+                st.warning(
+                    f"⚠️ **{item['name']}** ｜ 批號：`{item['batch']}` ｜ 有效期限：`{item['expiry']}` "
+                    f"（剩餘 **{item['days']}** 天） ｜ 當前庫存：`{item['stock']}`"
+                )
+
 # 寫入 Log 輔助函式
 def append_to_log_sheet(connection, possible_sheet_names, new_logs_df):
     for sheet_name in possible_sheet_names:
@@ -143,6 +201,9 @@ menu = st.sidebar.radio(
 )
 
 df_inventory = load_data()
+
+# 🔔 開頁即時執行效期自動檢查與警報通知
+check_expiration_warnings(df_inventory)
 
 # -----------------------------------------------------------------------------
 # 頁面 1：多項藥品領用登記
@@ -477,7 +538,7 @@ elif menu == "📦 當前庫存總覽":
     st.dataframe(df_inventory.drop(columns=['display_name'], errors='ignore'), use_container_width=True, hide_index=True)
 
 # -----------------------------------------------------------------------------
-# 頁面 5：用藥月報與學期統計表 (已移除重複欄位，統一為「當月剩餘量」)
+# 頁面 5：用藥月報與學期統計表
 # -----------------------------------------------------------------------------
 elif menu == "📊 用藥月報與學期統計表":
     st.header("📊 國立臺北大學衛保組 藥品使用月報與全學期統計表")
@@ -575,7 +636,6 @@ elif menu == "📊 用藥月報與學期統計表":
     ws.append([title_text])
     ws.cell(row=1, column=1).font = Font(name="微軟正黑體", size=13, bold=True, color="1F4E78")
 
-    # Excel 表頭（已刪除多餘的 115年9月期末剩餘量）
     excel_headers = [
         "藥品名稱\n(商品名/中文)", "115年8月\n剩餘量",
         *days,
@@ -639,11 +699,11 @@ elif menu == "📊 用藥月報與學期統計表":
             row["藥品名稱\n(商品名/中文)"], row["115年8月\n剩餘量"],
             *day_qtys,
             f"=SUM(C{r_idx}:X{r_idx})",                        # Y: 當月使用總量
-            f"=B{r_idx}+AA{r_idx}-Y{r_idx}-AB{r_idx}-AC{r_idx}", # Z: 當月剩餘量 (=上月剩餘量+購入量-當月使用-過期報銷-公藥使用)
+            f"=B{r_idx}+AA{r_idx}-Y{r_idx}-AB{r_idx}-AC{r_idx}", # Z: 當月剩餘量
             0,                                                 # AA: 購入量
             0,                                                 # AB: 過期報銷
             0,                                                 # AC: 公藥使用
-            f"=Z{r_idx}",                                      # AD: 實體盤點數量 (=當月剩餘量)
+            f"=Z{r_idx}",                                      # AD: 實體盤點數量
             row["有效期限"],                                    # AE: 有效期限
             m9_val, m10_val, m11_val, m12_val, m1_val,         # AF~AJ: 月消耗量
             f"=SUM(AF{r_idx}:AJ{r_idx})"                        # AK: 全學期使用總量
