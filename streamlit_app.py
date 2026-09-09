@@ -101,7 +101,7 @@ def load_data():
         st.error(f"❌ 讀取『庫存』試算表失敗，請確認 Google Sheet 中有『庫存』工作表。細節：{e}")
         st.stop()
 
-# 💡 效期檢查與自動通知功能
+# 💡 效期檢查與自動通知功能（含 🚨 嚴重警告提示）
 def check_expiration_warnings(df):
     if df is None or df.empty or '有效期限' not in df.columns:
         return
@@ -142,17 +142,19 @@ def check_expiration_warnings(df):
             except Exception:
                 continue
 
-    # 顯示通知區塊
+    # 🚨 顯示已過期嚴重警告提示區塊
     if already_expired:
-        with st.expander("🚨 【嚴重警告】以下藥品已過期！請立即處置與報銷", expanded=True):
+        st.error("🚨 **【嚴重警告】系統檢測到有藥品已過期！提醒人員儘速處置與辦理報銷！**")
+        with st.expander("🚨 查看已過期藥品明細 (請儘速處置與報銷)", expanded=True):
             for item in already_expired:
-                st.error(
+                st.markdown(
                     f"❌ **{item['name']}** ｜ 批號：`{item['batch']}` ｜ 有效期限：`{item['expiry']}` "
                     f"（已過期 **{item['days']}** 天） ｜ 當前庫存：`{item['stock']}`"
                 )
 
+    # ⚠️ 顯示 1 個月內即將到期預警區塊
     if expiring_soon:
-        with st.expander("⚠️ 【到期預警】以下藥品將於 1 個月內到期！請留意使用狀況", expanded=True):
+        with st.expander("⚠️ 【到期預警】以下藥品將於 1 個月內到期！請留意使用狀況與準備報銷", expanded=True):
             for item in expiring_soon:
                 st.warning(
                     f"⚠️ **{item['name']}** ｜ 批號：`{item['batch']}` ｜ 有效期限：`{item['expiry']}` "
@@ -538,7 +540,7 @@ elif menu == "📦 當前庫存總覽":
     st.dataframe(df_inventory.drop(columns=['display_name'], errors='ignore'), use_container_width=True, hide_index=True)
 
 # -----------------------------------------------------------------------------
-# 頁面 5：用藥月報與學期統計表
+# 頁面 5：用藥月報與學期統計表 (含當月過期藥物自動匯入)
 # -----------------------------------------------------------------------------
 elif menu == "📊 用藥月報與學期統計表":
     st.header("📊 國立臺北大學衛保組 藥品使用月報與全學期統計表")
@@ -552,6 +554,13 @@ elif menu == "📊 用藥月報與學期統計表":
     month_num = int(selected_month.replace("月", ""))
     days_list = [1, 2, 3, 4, 7, 8, 9, 10, 11, 14, 15, 16, 17, 18, 21, 22, 23, 24, 25, 28, 29, 30]
     days = [f"{month_num}/{d}" for d in days_list]
+
+    # 計算統計月份對應之公元年/月，供效期比對
+    try:
+        roc_num = int(selected_year.replace("學年度", "").strip())
+        report_year = (roc_num + 1911) if month_num >= 8 else (roc_num + 1911 + 1)
+    except Exception:
+        report_year = datetime.now().year
     
     # 讀取並彙整領用紀錄中的「每日領用量」
     df_logs, _ = get_log_sheet_data(conn, ["領用記錄", "領用紀錄"])
@@ -583,13 +592,14 @@ elif menu == "📊 用藥月報與學期統計表":
 
     report_rows = []
     excel_day_qty_list = []
+    excel_expired_qty_list = []
 
     for idx, row in df_inventory.iterrows():
         eng_name = str(row.get('藥品名稱(英文)', '')).strip()
         cht_name = str(row.get('中文名稱', '')).strip()
         combined_name = f"{eng_name} ({cht_name})" if cht_name else eng_name
         stock = int(row.get('目前庫存', 0))
-        expiry = str(row.get('有效期限', ''))
+        expiry = str(row.get('有效期限', '')).strip()
 
         day_quantities = []
         r_dict = {"藥品名稱\n(商品名/中文)": combined_name, "115年8月\n剩餘量": stock}
@@ -604,13 +614,26 @@ elif menu == "📊 用藥月報與學期統計表":
 
         excel_day_qty_list.append(day_quantities)
         monthly_used_sum = sum(day_quantities)
-        rem_stock = max(0, stock - monthly_used_sum)
+
+        # 💡 自動判定該藥品是否於「當前統計月份」或更早前過期，若是則將剩餘數量直接帶入「過期報銷」
+        expired_writeoff = 0
+        if pd.notna(expiry) and expiry != '' and expiry.lower() != 'nan':
+            try:
+                exp_date = pd.to_datetime(expiry).date()
+                # 若有效期限落在該統計月份（或在此之前），扣減當月使用量後的剩餘量自動帶入過期報銷
+                if (exp_date.year == report_year and exp_date.month == month_num) or (exp_date < datetime(report_year, month_num, 1).date()):
+                    expired_writeoff = max(0, stock - monthly_used_sum)
+            except Exception:
+                expired_writeoff = 0
+
+        excel_expired_qty_list.append(expired_writeoff)
+        rem_stock = max(0, stock - monthly_used_sum - expired_writeoff)
 
         r_dict.update({
             "當月使用\n總量": monthly_used_sum, 
             "當月剩餘量": rem_stock,
             "購入量": 0, 
-            "過期報銷": 0, 
+            "過期報銷": expired_writeoff, # 💡 當月過期自動匯入報銷欄位
             "公藥使用": 0,
             "實體盤點\n數量": rem_stock, 
             "有效期限": expiry,
@@ -688,6 +711,7 @@ elif menu == "📊 用藥月報與學期統計表":
     for idx, row in df_report.iterrows():
         r_idx = idx + 3
         day_qtys = excel_day_qty_list[idx]
+        exp_qty = excel_expired_qty_list[idx]
 
         m9_val = f"=Y{r_idx}" if month_num == 9 else 0
         m10_val = f"=Y{r_idx}" if month_num == 10 else 0
@@ -699,9 +723,9 @@ elif menu == "📊 用藥月報與學期統計表":
             row["藥品名稱\n(商品名/中文)"], row["115年8月\n剩餘量"],
             *day_qtys,
             f"=SUM(C{r_idx}:X{r_idx})",                        # Y: 當月使用總量
-            f"=B{r_idx}+AA{r_idx}-Y{r_idx}-AB{r_idx}-AC{r_idx}", # Z: 當月剩餘量
+            f"=B{r_idx}+AA{r_idx}-Y{r_idx}-AB{r_idx}-AC{r_idx}", # Z: 當月剩餘量 (扣除過期報銷)
             0,                                                 # AA: 購入量
-            0,                                                 # AB: 過期報銷
+            exp_qty,                                           # AB: 過期報銷 (💡 自動連動寫入)
             0,                                                 # AC: 公藥使用
             f"=Z{r_idx}",                                      # AD: 實體盤點數量
             row["有效期限"],                                    # AE: 有效期限
@@ -716,7 +740,7 @@ elif menu == "📊 用藥月報與學期統計表":
             cell.alignment = align_center if c_idx > 1 else align_left
             cell.font = font_default
 
-            if c_idx in [2, 30]: # B (上月剩餘量), AD (實體盤點數量)
+            if c_idx in [2, 28, 30]: # B (上月剩餘量), AB (過期報銷), AD (實體盤點數量)
                 cell.font = font_red
             elif c_idx in [25, 26]: # Y (當月使用總量), Z (當月剩餘量)
                 cell.fill = fill_data_yellow
