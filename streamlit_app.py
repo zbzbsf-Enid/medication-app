@@ -213,7 +213,7 @@ if menu == "💊 多項藥品領用登記":
                 except Exception as e:
                     st.error(f"❌ 更新失敗：{e}")
 
-# 頁面 2：新增藥品進貨/補貨登記
+# 頁面 2：新增藥品進貨/補貨登記 (含容錯機制)
 elif menu == "📥 藥品進貨/補貨登記":
     st.header("📥 藥品購入與進貨登記")
     st.caption("在此輸入買入的藥品數量、新批號與有效期限，系統將自動累加庫存。")
@@ -237,7 +237,7 @@ elif menu == "📥 藥品進貨/補貨登記":
                 inbound_date = st.date_input("📅 進貨日期：", value=datetime.now().date())
                 purchase_qty = st.number_input("📦 購入數量：", min_value=1, value=100, step=1)
             with col_p2:
-                new_batch = st.text_input("🏷️ 新藥品批號：", value=str(row_info['批號']))
+                new_batch = st.text_input("🏷️ 新藥品批號：", value=str(row_info['批號']) if pd.notna(row_info['批號']) else "")
                 new_expiry = st.date_input("⏳ 新有效期限：", value=datetime.now().date())
 
             vendor_remark = st.text_input("🏢 廠商/採購備註：", placeholder="例如：衛福部撥發 / 某某藥局採購")
@@ -251,12 +251,12 @@ elif menu == "📥 藥品進貨/補貨登記":
                 expiry_str = new_expiry.strftime("%Y-%m-%d")
                 inbound_time_str = f"{inbound_date.strftime('%Y-%m-%d')} {datetime.now().strftime('%H:%M:%S')}"
 
-                # 更新庫存主表
+                # 1. 更新庫存主表
                 df_inventory.loc[idx, '目前庫存'] = new_qty
                 df_inventory.loc[idx, '批號'] = new_batch
                 df_inventory.loc[idx, '有效期限'] = expiry_str
 
-                # 建立進貨 Log
+                # 2. 建立進貨 Log
                 purchase_log = {
                     "進貨時間": inbound_time_str,
                     "藥品名稱": df_inventory.loc[idx, '藥品名稱(英文)'],
@@ -271,18 +271,23 @@ elif menu == "📥 藥品進貨/補貨登記":
                 try:
                     df_save = df_inventory.drop(columns=['display_name'])
                     conn.update(worksheet="庫存", data=df_save)
+                    
+                    # 嘗試寫入「進貨紀錄」分頁
                     try:
-                        df_inbound_existing = conn.read(worksheet="進貨紀錄", ttl=0)
-                        df_inbound_updated = pd.concat([df_inbound_existing, pd.DataFrame([purchase_log])], ignore_index=True)
-                    except Exception:
-                        df_inbound_updated = pd.DataFrame([purchase_log])
-                    conn.update(worksheet="進貨紀錄", data=df_inbound_updated)
+                        try:
+                            df_inbound_existing = conn.read(worksheet="進貨紀錄", ttl=0)
+                            df_inbound_updated = pd.concat([df_inbound_existing, pd.DataFrame([purchase_log])], ignore_index=True)
+                        except Exception:
+                            df_inbound_updated = pd.DataFrame([purchase_log])
+                        conn.update(worksheet="進貨紀錄", data=df_inbound_updated)
+                    except Exception as log_err:
+                        st.warning("⚠️ 庫存已成功更新！但寫入『進貨紀錄』分頁失敗，請確認 Google 試算表中是否已建立名為 『進貨紀錄』 的分頁。")
 
                     st.success(f"🎉 進貨完成！`{selected_med}` 庫存已由 {old_qty} 增加至 {new_qty}，批號更新為 `{new_batch}`。")
                     st.cache_data.clear()
                     st.rerun()
                 except Exception as e:
-                    st.error(f"❌ 進貨寫入失敗：{e}")
+                    st.error(f"❌ 庫存更新失敗：{e}")
 
 # 頁面 3：當前庫存總覽
 elif menu == "📦 當前庫存總覽":
