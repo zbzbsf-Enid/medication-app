@@ -13,107 +13,119 @@ st.set_page_config(
     layout="wide"
 )
 
-# 高對比度與日曆專用 CSS 修正
+# 全域強制高對比明亮風格 CSS 修正
 st.markdown("""
     <style>
-    /* 1. 全域背景與字型 (微軟正黑體 16px) */
-    html, body, [class*="css"], .stApp {
+    /* 1. 強制全域與所有組件使用明亮模式 (Light Mode) */
+    :root {
+        color-scheme: light !important;
+    }
+
+    html, body, [class*="css"], .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
         font-family: 'Microsoft JhengHei', '微軟正黑體', sans-serif !important;
         font-size: 16px !important;
         background-color: #f8fafc !important;
         color: #0f172a !important;
     }
 
-    /* 2. 強制所有文字、標籤與標題為深色高對比 */
+    /* 2. 標題與內文文字黑字高對比 */
     p, span, label, h1, h2, h3, h4, .stMarkdown, div[data-testid="stMarkdownContainer"] * {
         color: #0f172a !important;
         opacity: 1 !important;
     }
 
-    /* 3. 側邊欄樣式與選項強化 */
-    section[data-testid="stSidebar"] {
-        background-color: #e2e8f0 !important;
-        border-right: 2px solid #cbd5e1 !important;
-    }
-    section[data-testid="stSidebar"] * {
-        color: #0f172a !important;
-        font-weight: 500 !important;
-    }
-
-    /* 4. 下拉選單與普通輸入框樣式 */
-    div[data-baseweb="select"] > div {
-        background-color: #ffffff !important;
-        color: #0f172a !important;
-        border: 1px solid #94a3b8 !important;
-        border-radius: 8px !important;
-    }
-    div[data-baseweb="select"] * {
-        color: #0f172a !important;
-    }
-
-    /* 5. 日期輸入框本體 (stDateInput) 強制白底黑字 */
-    div[data-testid="stDateInput"] {
-        background-color: transparent !important;
-    }
+    /* 3. 輸入框本體（單行文字、數字、日期、下拉選單）強制純白底 + 淡灰邊框 */
+    div[data-baseweb="input"],
+    div[data-baseweb="base-input"],
+    div[data-baseweb="select"] > div,
     div[data-testid="stDateInput"] div[data-baseweb="input"] {
-        background-color: #ffffff !important;
-        border: 1px solid #94a3b8 !important;
-        border-radius: 6px !important;
-    }
-    div[data-testid="stDateInput"] input {
-        background-color: #ffffff !important;
-        color: #0f172a !important;
-        font-weight: 600 !important;
-    }
-
-    /* 6. 徹底修正日曆彈窗 (Popover & Calendar) 高對比白底黑字 */
-    div[data-baseweb="popover"],
-    div[data-baseweb="calendar"] {
         background-color: #ffffff !important;
         border: 1px solid #cbd5e1 !important;
         border-radius: 8px !important;
-        box-shadow: 0 10px 25px rgba(0,0,0,0.15) !important;
     }
 
-    /* 強制日曆內部所有文字（星期、月份、數字）為深黑色 */
+    /* 輸入框內部文字 */
+    div[data-baseweb="input"] input,
+    div[data-baseweb="base-input"] input,
+    div[data-baseweb="select"] input,
+    textarea {
+        background-color: #ffffff !important;
+        color: #0f172a !important;
+        -webkit-text-fill-color: #0f172a !important;
+        font-weight: 500 !important;
+    }
+
+    /* 4. 多選標籤 (Multiselect Tags) 風格修正：柔和藍底深藍字 */
+    div[data-baseweb="tag"] {
+        background-color: #e0f2fe !important;
+        border: 1px solid #bae6fd !important;
+        border-radius: 6px !important;
+    }
+    div[data-baseweb="tag"] span, div[data-baseweb="tag"] * {
+        color: #0369a1 !important;
+        -webkit-text-fill-color: #0369a1 !important;
+        font-weight: 600 !important;
+    }
+
+    /* 5. 徹底修正日曆彈窗 (Popover & Calendar) 與下拉選單選單 */
+    div[data-baseweb="popover"],
+    div[data-baseweb="popover"] > div,
+    div[data-baseweb="calendar"],
+    div[data-baseweb="menu"],
+    ul[role="listbox"] {
+        background-color: #ffffff !important;
+        border: 1px solid #e2e8f0 !important;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.1) !important;
+    }
+
+    /* 日曆內部所有文字、標題、星期與日期數字強制清晰黑字 */
     div[data-baseweb="calendar"] *,
     div[data-baseweb="calendar"] button,
-    div[data-baseweb="calendar"] div {
+    div[data-baseweb="calendar"] div,
+    div[data-baseweb="calendar"] header {
         color: #0f172a !important;
-        background-color: #ffffff !important;
+        -webkit-text-fill-color: #0f172a !important;
+        background-color: transparent !important;
     }
 
-    /* 日曆日期 hover 效果 */
+    /* 日曆日期 Hover 懸浮效果 */
+    div[data-baseweb="calendar"] [role="gridcell"]:hover,
     div[data-baseweb="calendar"] button:hover {
-        background-color: #e2e8f0 !important;
-    }
-
-    /* 被選中的日期（標示為綠色背景 + 純白文字） */
-    div[data-baseweb="calendar"] [aria-selected="true"],
-    div[data-baseweb="calendar"] [aria-selected="true"] * {
-        background-color: #0d9488 !important;
-        color: #ffffff !important;
-        font-weight: bold !important;
+        background-color: #f1f5f9 !important;
         border-radius: 50% !important;
     }
 
-    /* 7. 表單與按鈕樣式 */
+    /* 當前選中的日期 (翡翠綠圓底白字) */
+    div[data-baseweb="calendar"] [aria-selected="true"] {
+        background-color: #0d9488 !important;
+        border-radius: 50% !important;
+    }
+    div[data-baseweb="calendar"] [aria-selected="true"] *,
+    div[data-baseweb="calendar"] [aria-selected="true"] div {
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        font-weight: bold !important;
+    }
+
+    /* 6. 側邊欄與表單外框簡潔美化 */
+    section[data-testid="stSidebar"] {
+        background-color: #f1f5f9 !important;
+        border-right: 1px solid #e2e8f0 !important;
+    }
     div[data-testid="stForm"] {
         background-color: #ffffff !important;
         padding: 24px;
         border-radius: 12px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
-        border: 1px solid #cbd5e1 !important;
+        border: 1px solid #e2e8f0 !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
     }
     .stButton > button, div[data-testid="stForm"] button {
-        font-size: 16px !important;
-        font-family: 'Microsoft JhengHei', '微軟正黑體', sans-serif !important;
         background-color: #0d9488 !important;
         color: #ffffff !important;
         border-radius: 8px !important;
         border: none !important;
-        padding: 8px 20px !important;
         font-weight: 600 !important;
+        padding: 8px 20px !important;
     }
     .stButton > button:hover, div[data-testid="stForm"] button:hover {
         background-color: #0f766e !important;
