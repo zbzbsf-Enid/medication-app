@@ -3,189 +3,189 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
 
-# 1. 頁面基本設定
+# 頁面基本設定
 st.set_page_config(
-    page_title="衛保組管理系統",
+    page_title="衛保組藥品管理系統",
     page_icon="💊",
     layout="wide"
 )
 
+# 注入清新明亮主題 CSS 與 微軟正黑體 16號字體 (16px)
+st.markdown("""
+    <style>
+    /* 全域字型設定 (微軟正黑體 16px) */
+    html, body, [class*="css"], .stApp {
+        font-family: 'Microsoft JhengHei', '微軟正黑體', 'PingFang TC', sans-serif !important;
+        font-size: 16px !important;
+        background-color: #f8fafc !important;
+        color: #1e293b !important;
+    }
+
+    /* 標題樣式調整 */
+    h1, h2, h3, h4 {
+        font-family: 'Microsoft JhengHei', '微軟正黑體', sans-serif !important;
+        color: #0f172a !important;
+        font-weight: 700 !important;
+    }
+
+    /* 輸入框、下拉選單與數字輸入框文字大小 */
+    .stTextInput input, .stNumberInput input, .stSelectbox, .stMultiSelect {
+        font-size: 16px !important;
+        font-family: 'Microsoft JhengHei', '微軟正黑體', sans-serif !important;
+    }
+
+    /* 清新卡片容器設計 */
+    div[data-testid="stForm"] {
+        background-color: #ffffff;
+        padding: 24px;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+        border: 1px solid #e2e8f0;
+    }
+
+    /* 清新明亮風格按鈕 (薄荷青綠色調) */
+    .stButton > button, div[data-testid="stForm"] button {
+        font-size: 16px !important;
+        font-family: 'Microsoft JhengHei', '微軟正黑體', sans-serif !important;
+        background-color: #0d9488 !important;
+        color: #ffffff !important;
+        border-radius: 8px !important;
+        border: none !important;
+        padding: 8px 20px !important;
+        font-weight: 600 !important;
+        transition: all 0.2s ease-in-out;
+    }
+    .stButton > button:hover, div[data-testid="stForm"] button:hover {
+        background-color: #0f766e !important;
+        box-shadow: 0 2px 8px rgba(13, 148, 136, 0.3);
+    }
+
+    /* 側邊欄色彩優化 */
+    section[data-testid="stSidebar"] {
+        background-color: #f1f5f9 !important;
+        border-right: 1px solid #e2e8f0;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 st.title("💊 衛保組藥品管理系統")
 
-# 2. 建立 Google Sheets 雲端連線 (讀取 Secrets)
+# 建立 Google Connection
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
     st.error(f"❌ 無法建立 Google 連線，請檢查 Streamlit Cloud 的 Secrets 設定。錯誤訊息: {e}")
     st.stop()
 
-# 3. 資料載入與處理解析函式
-@st.cache_data(ttl=5)
-def load_inventory_data():
+# 讀取試算表資料
+def load_data():
     try:
-        # 優先讀取名為「庫存」的工作表，若不存在則讀取第一個 Sheet
         df = conn.read(worksheet="庫存", ttl=0)
-    except Exception:
-        df = conn.read(ttl=0)
-    
-    # 欄位檢查與格式修正
-    required_cols = ["藥品名稱(英文)", "中文名稱", "目前庫存", "有效期限", "用途/備註"]
-    for col in required_cols:
-        if col not in df.columns:
-            df[col] = ""
-            
-    df["目前庫存"] = pd.to_numeric(df["目前庫存"], errors="coerce").fillna(0).astype(int)
-    return df[required_cols]
+        return df
+    except Exception as e:
+        st.error(f"❌ 讀取試算表失敗，請確認標題與權限。錯誤：{e}")
+        st.stop()
 
-def load_log_data():
-    try:
-        df = conn.read(worksheet="領用紀錄", ttl=0)
-    except Exception:
-        df = pd.DataFrame(columns=["領用時間", "藥品名稱", "中文名稱", "領用數量", "剩餘庫存", "備註"])
-    return df
-
-def save_inventory_data(df):
-    try:
-        conn.update(worksheet="庫存", data=df)
-    except Exception:
-        conn.update(data=df)
-
-def save_log_data(df_log):
-    try:
-        conn.update(worksheet="領用紀錄", data=df_log)
-    except Exception:
-        pass
-
-# 4. 讀取最新庫存資料
-try:
-    df_inventory = load_inventory_data()
-except Exception as e:
-    st.error(f"❌ 讀取試算表資料失敗，請確認試算表是否有共用給服務帳號 Email。錯誤：{e}")
-    st.stop()
-
-# 5. 側邊欄選單
+# 側邊選單
 st.sidebar.title("📌 功能選單")
-page = st.sidebar.radio(
-    "請選擇功能頁面",
-    ["💊 藥品領用與紀錄", "📦 庫存盤點與校正", "☁️ 雲端報表匯出"]
-)
-
-st.sidebar.markdown("---")
 if st.sidebar.button("🔄 手動刷新雲端最新資料"):
     st.cache_data.clear()
     st.rerun()
 
-# -----------------------------------------------------------------------------
-# 功能頁面 1：藥品領用與紀錄
-# -----------------------------------------------------------------------------
-if page == "💊 藥品領用與紀錄":
-    col1, col2 = st.columns([1.2, 1])
+menu = st.sidebar.radio("請選擇功能頁面", ["💊 多項藥品領用與登記", "📦 當前庫存總覽"])
 
-    with col1:
-        st.subheader("💊 藥品領用與登記")
-        st.caption("點選下方搜尋欄可選擇一種或多種藥品，設定數量後即可一次完成登記與庫存扣減。")
+df_inventory = load_data()
 
-        options = [f"{row['藥品名稱(英文)']} | {row['中文名稱']}" for _, row in df_inventory.iterrows()]
-        selected_meds = st.multiselect(
-            "選擇本次領取的所有藥品 (可同時選擇多項)",
-            options=options,
-            placeholder="請點擊或輸入藥名/中文名稱進行搜尋..."
-        )
+if menu == "💊 多項藥品領用與登記":
+    st.header("📋 批量藥品領用登記")
+    
+    # 建立多選下拉菜單標籤
+    df_inventory['display_name'] = df_inventory['藥品名稱(英文)'].fillna('') + " | " + df_inventory['中文名稱'].fillna('') + " (批號: " + df_inventory['批號'].astype(str) + ")"
+    options = df_inventory['display_name'].tolist()
 
-        if selected_meds:
-            st.write("### 📝 設定領取數量")
-            inputs = {}
-            with st.form("dispense_form"):
-                for item in selected_meds:
-                    med_eng = item.split(" | ")[0]
-                    current_stock = df_inventory.loc[df_inventory["藥品名稱(英文)"] == med_eng, "目前庫存"].values[0]
-                    
-                    num = st.number_input(
-                        f"【{item}】領用數量 (目前庫存: {current_stock})",
-                        min_value=1,
-                        max_value=int(current_stock) if current_stock > 0 else 1,
-                        value=1,
-                        key=f"num_{med_eng}"
-                    )
-                    inputs[med_eng] = num
-                
-                note = st.text_input("領用備註 (選填，例如：學生領用/傷口處置)", value="")
-                submit_button = st.form_submit_button("✅ 確認登記領用")
-
-                if submit_button:
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    df_logs = load_log_data()
-
-                    new_logs = []
-                    for med_eng, qty in inputs.items():
-                        idx = df_inventory[df_inventory["藥品名稱(英文)"] == med_eng].index[0]
-                        med_chi = df_inventory.loc[idx, "中文名稱"]
-                        cur_qty = df_inventory.loc[idx, "目前庫存"]
-                        
-                        new_qty = max(0, cur_qty - qty)
-                        df_inventory.loc[idx, "目前庫存"] = new_qty
-                        
-                        new_logs.append({
-                            "領用時間": now_str,
-                            "藥品名稱": med_eng,
-                            "中文名稱": med_chi,
-                            "領用數量": qty,
-                            "剩餘庫存": new_qty,
-                            "備註": note
-                        })
-
-                    # 更新寫回雲端試算表
-                    save_inventory_data(df_inventory)
-                    if new_logs:
-                        df_new_logs = pd.DataFrame(new_logs)
-                        df_logs = pd.concat([df_logs, df_new_logs], ignore_index=True)
-                        save_log_data(df_logs)
-
-                    st.success("🎉 領用登記成功！資料已同步寫入 Google 雲端試算表。")
-                    st.cache_data.clear()
-                    st.rerun()
-        else:
-            st.info("💡 請先在上方的選單中點選或搜尋要領取的藥品。")
-
-    with col2:
-        st.subheader("📋 當前藥品庫存總覽")
-        st.dataframe(df_inventory, use_container_width=True, hide_index=True)
-
-# -----------------------------------------------------------------------------
-# 功能頁面 2：庫存盤點與校正
-# -----------------------------------------------------------------------------
-elif page == "📦 庫存盤點與校正":
-    st.subheader("📦 庫存盤點與數字校正")
-    st.caption("您可以直接雙擊下方表格中的欄位修改數值（例如盤點後的實際數量），完成後點擊「儲存修改」寫回雲端。")
-
-    edited_df = st.data_editor(
-        df_inventory,
-        num_rows="dynamic",
-        use_container_width=True,
-        key="inventory_editor"
+    selected_items = st.multiselect(
+        "請點擊或輸入關鍵字選擇欲領取的藥品（可同時選擇多項）：",
+        options=options,
+        placeholder="搜尋或選擇藥品..."
     )
 
-    if st.button("💾 儲存修改至 Google 雲端試算表"):
-        save_inventory_data(edited_df)
-        st.success("✅ 庫存校正成功！雲端資料庫已更新。")
-        st.cache_data.clear()
-        st.rerun()
+    if selected_items:
+        st.markdown("---")
+        st.subheader("✏️ 請鍵入各藥品的領用數量")
+        
+        with st.form("batch_checkout_form"):
+            quantities = {}
+            for item in selected_items:
+                row_data = df_inventory[df_inventory['display_name'] == item].iloc[0]
+                curr_stock = int(row_data['目前庫存'])
+                
+                col1, col2 = st.columns([3, 2])
+                with col1:
+                    st.markdown(f"**{item}**")
+                    st.caption(f"目前剩餘庫存：`{curr_stock}`")
+                with col2:
+                    # 可直接輸入/鍵入數字的選項
+                    qty = st.number_input(
+                        f"領用數量",
+                        min_value=1,
+                        max_value=max(curr_stock, 1),
+                        value=1,
+                        step=1,
+                        key=f"input_{item}"
+                    )
+                    quantities[item] = qty
+                st.markdown("<hr style='margin: 8px 0; border-color: #f1f5f9;'>", unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# 功能頁面 3：雲端報表匯出
-# -----------------------------------------------------------------------------
-elif page == "☁️ 雲端報表匯出":
-    st.subheader("☁️ 領用歷史紀錄與報表")
-    try:
-        df_logs = load_log_data()
-        st.dataframe(df_logs, use_container_width=True, hide_index=True)
+            remarks = st.text_input("備註（選填，例如：學生領用 / 活動備用）：", placeholder="請輸入領用備註...")
+            submit_btn = st.form_submit_button("✅ 一鍵完成登記與庫存扣減")
 
-        csv_data = df_logs.to_csv(index=False).encode('utf-8-sig')
-        st.download_button(
-            label="📥 下載領用歷史紀錄 (CSV 檔)",
-            data=csv_data,
-            file_name=f"medication_logs_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv"
-        )
-    except Exception as e:
-        st.warning(f"目前無領用紀錄或讀取失敗：{e}")
+            if submit_btn:
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                new_logs = []
+
+                # 扣減庫存並建立 Log 紀錄
+                for item, qty in quantities.items():
+                    idx = df_inventory[df_inventory['display_name'] == item].index[0]
+                    old_stock = int(df_inventory.loc[idx, '目前庫存'])
+                    new_stock = max(0, old_stock - qty)
+                    
+                    df_inventory.loc[idx, '目前庫存'] = new_stock
+                    
+                    new_logs.append({
+                        "領用時間": now_str,
+                        "藥品名稱": df_inventory.loc[idx, '藥品名稱(英文)'],
+                        "中文名稱": df_inventory.loc[idx, '中文名稱'],
+                        "領用數量": qty,
+                        "剩餘庫存": new_stock,
+                        "備註": remarks
+                    })
+
+                # 更新 Google Sheets
+                try:
+                    # 1. 更新庫存分頁
+                    df_save = df_inventory.drop(columns=['display_name'])
+                    conn.update(worksheet="庫存", data=df_save)
+                    
+                    # 2. 寫入領用紀錄分頁
+                    try:
+                        df_logs_existing = conn.read(worksheet="領用紀錄", ttl=0)
+                        df_logs_new = pd.DataFrame(new_logs)
+                        df_logs_updated = pd.concat([df_logs_existing, df_logs_new], ignore_index=True)
+                    except Exception:
+                        df_logs_updated = pd.DataFrame(new_logs)
+                        
+                    conn.update(worksheet="領用紀錄", data=df_logs_updated)
+                    
+                    st.success("🎉 批量領用登記成功！試算表庫存與 Log 已完成自動更新。")
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ 更新試算表失敗，原因：{e}")
+
+elif menu == "📦 當前庫存總覽":
+    st.header("📦 當前藥品庫存總覽")
+    st.dataframe(
+        df_inventory.drop(columns=['display_name'], errors='ignore'),
+        use_container_width=True,
+        hide_index=True
+    )
