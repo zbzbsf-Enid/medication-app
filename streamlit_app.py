@@ -13,7 +13,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# 高對比度與清晰度 CSS (解決黑夜模式衝突與文字模糊問題)
+# 高對比度與清晰度 CSS
 st.markdown("""
     <style>
     /* 1. 全域背景與字型 (微軟正黑體 16px) */
@@ -129,12 +129,12 @@ if st.sidebar.button("🔄 手動刷新雲端資料"):
 
 menu = st.sidebar.radio(
     "請選擇功能頁面", 
-    ["💊 多項藥品領用登記", "📦 當前庫存總覽", "📊 用藥月報與學期統計表"]
+    ["💊 多項藥品領用登記", "📥 藥品進貨/補貨登記", "📦 當前庫存總覽", "📊 用藥月報與學期統計表"]
 )
 
 df_inventory = load_data()
 
-# 頁面 1：多項藥品領用登記 (支援日期補登)
+# 頁面 1：多項藥品領用登記
 if menu == "💊 多項藥品領用登記":
     st.header("📋 批量藥品領用登記")
     df_inventory['display_name'] = (
@@ -156,14 +156,13 @@ if menu == "💊 多項藥品領用登記":
         with st.form("batch_checkout_form"):
             col_d1, col_d2 = st.columns([1, 2])
             with col_d1:
-                # 預設為今天，若為補登可自由改選過去日期
                 record_date = st.date_input(
                     "📅 實際領用/補登日期：", 
                     value=datetime.now().date(),
-                    help="若為補登昨日或過去的紀錄，請直接在此修改日期"
+                    help="若為補登昨日或過去的紀錄，請在此修改日期"
                 )
             with col_d2:
-                remarks = st.text_input("領用備註/用途：", placeholder="例如：衛保組公用 / 門診備用 (補登記)")
+                remarks = st.text_input("領用備註/用途：", placeholder="例如：衛保組公用 / 門診備用")
 
             st.markdown("<hr style='margin: 12px 0;'>", unsafe_allow_html=True)
 
@@ -183,7 +182,6 @@ if menu == "💊 多項藥品領用登記":
             submit_btn = st.form_submit_button("✅ 完成登記並更新庫存")
 
             if submit_btn:
-                # 組合選擇的日期與當前時間
                 log_time_str = f"{record_date.strftime('%Y-%m-%d')} {datetime.now().strftime('%H:%M:%S')}"
                 new_logs = []
                 for item, qty in quantities.items():
@@ -215,12 +213,83 @@ if menu == "💊 多項藥品領用登記":
                 except Exception as e:
                     st.error(f"❌ 更新失敗：{e}")
 
-# 頁面 2：當前庫存總覽
+# 頁面 2：新增藥品進貨/補貨登記
+elif menu == "📥 藥品進貨/補貨登記":
+    st.header("📥 藥品購入與進貨登記")
+    st.caption("在此輸入買入的藥品數量、新批號與有效期限，系統將自動累加庫存。")
+
+    df_inventory['display_name'] = (
+        df_inventory['藥品名稱(英文)'].fillna('') + " (" + 
+        df_inventory['中文名稱'].fillna('') + ")"
+    )
+    med_list = df_inventory['display_name'].tolist()
+
+    selected_med = st.selectbox("請選擇進貨藥品：", options=med_list)
+
+    if selected_med:
+        row_info = df_inventory[df_inventory['display_name'] == selected_med].iloc[0]
+        
+        st.info(f"📌 當前庫存：`{row_info['目前庫存']}` | 目前批號：`{row_info['批號']}` | 目前有效期限：`{row_info['有效期限']}`")
+
+        with st.form("purchase_inbound_form"):
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                inbound_date = st.date_input("📅 進貨日期：", value=datetime.now().date())
+                purchase_qty = st.number_input("📦 購入數量：", min_value=1, value=100, step=1)
+            with col_p2:
+                new_batch = st.text_input("🏷️ 新藥品批號：", value=str(row_info['批號']))
+                new_expiry = st.date_input("⏳ 新有效期限：", value=datetime.now().date())
+
+            vendor_remark = st.text_input("🏢 廠商/採購備註：", placeholder="例如：衛福部撥發 / 某某藥局採購")
+
+            submit_purchase = st.form_submit_button("✅ 確認進貨並更新庫存與批號")
+
+            if submit_purchase:
+                idx = df_inventory[df_inventory['display_name'] == selected_med].index[0]
+                old_qty = int(df_inventory.loc[idx, '目前庫存'])
+                new_qty = old_qty + int(purchase_qty)
+                expiry_str = new_expiry.strftime("%Y-%m-%d")
+                inbound_time_str = f"{inbound_date.strftime('%Y-%m-%d')} {datetime.now().strftime('%H:%M:%S')}"
+
+                # 更新庫存主表
+                df_inventory.loc[idx, '目前庫存'] = new_qty
+                df_inventory.loc[idx, '批號'] = new_batch
+                df_inventory.loc[idx, '有效期限'] = expiry_str
+
+                # 建立進貨 Log
+                purchase_log = {
+                    "進貨時間": inbound_time_str,
+                    "藥品名稱": df_inventory.loc[idx, '藥品名稱(英文)'],
+                    "中文名稱": df_inventory.loc[idx, '中文名稱'],
+                    "購入數量": purchase_qty,
+                    "新批號": new_batch,
+                    "有效期限": expiry_str,
+                    "更新後總庫存": new_qty,
+                    "備註": vendor_remark
+                }
+
+                try:
+                    df_save = df_inventory.drop(columns=['display_name'])
+                    conn.update(worksheet="庫存", data=df_save)
+                    try:
+                        df_inbound_existing = conn.read(worksheet="進貨紀錄", ttl=0)
+                        df_inbound_updated = pd.concat([df_inbound_existing, pd.DataFrame([purchase_log])], ignore_index=True)
+                    except Exception:
+                        df_inbound_updated = pd.DataFrame([purchase_log])
+                    conn.update(worksheet="進貨紀錄", data=df_inbound_updated)
+
+                    st.success(f"🎉 進貨完成！`{selected_med}` 庫存已由 {old_qty} 增加至 {new_qty}，批號更新為 `{new_batch}`。")
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ 進貨寫入失敗：{e}")
+
+# 頁面 3：當前庫存總覽
 elif menu == "📦 當前庫存總覽":
     st.header("📦 當前藥品庫存總覽")
     st.dataframe(df_inventory.drop(columns=['display_name'], errors='ignore'), use_container_width=True, hide_index=True)
 
-# 頁面 3：用藥月報與學期統計表
+# 頁面 4：用藥月報與學期統計表
 elif menu == "📊 用藥月報與學期統計表":
     st.header("📊 國立臺北大學衛保組 藥品使用月報與全學期統計表")
     
