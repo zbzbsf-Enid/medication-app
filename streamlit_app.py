@@ -92,7 +92,7 @@ except Exception as e:
     st.error(f"❌ 無法建立 Google 連線：{e}")
     st.stop()
 
-# 讀取資料 (設有快取機制防止 API 爆量)
+# 讀取資料
 def load_data():
     try:
         df = conn.read(worksheet="庫存", ttl="5m")
@@ -477,7 +477,7 @@ elif menu == "📦 當前庫存總覽":
     st.dataframe(df_inventory.drop(columns=['display_name'], errors='ignore'), use_container_width=True, hide_index=True)
 
 # -----------------------------------------------------------------------------
-# 頁面 5：用藥月報與學期統計表 (含每日領用自動匯入修正)
+# 頁面 5：用藥月報與學期統計表 (含新增「當月剩餘量」欄位)
 # -----------------------------------------------------------------------------
 elif menu == "📊 用藥月報與學期統計表":
     st.header("📊 國立臺北大學衛保組 藥品使用月報與全學期統計表")
@@ -494,16 +494,14 @@ elif menu == "📊 用藥月報與學期統計表":
     
     # 讀取並彙整領用紀錄中的「每日領用量」
     df_logs, _ = get_log_sheet_data(conn, ["領用記錄", "領用紀錄"])
-    daily_usage_map = {} # (藥品英文名/中文名, "9/7") -> 數量
+    daily_usage_map = {}
 
     if df_logs is not None and not df_logs.empty:
         try:
             df_logs['dt'] = pd.to_datetime(df_logs['領用時間'], errors='coerce')
-            # 濾出選取月份的紀錄
             df_logs_filtered = df_logs[df_logs['dt'].dt.month == month_num].copy()
             df_logs_filtered['day_str'] = df_logs_filtered['dt'].apply(lambda x: f"{x.month}/{x.day}" if pd.notnull(x) else "")
 
-            # 依 藥品名稱 與 day_str 進行彙整
             grouped = df_logs_filtered.groupby(['藥品名稱', 'day_str'])['領用數量'].sum().reset_index()
             for _, g_row in grouped.iterrows():
                 med_name = str(g_row['藥品名稱']).strip()
@@ -511,7 +509,6 @@ elif menu == "📊 用藥月報與學期統計表":
                 qty = int(g_row['領用數量'])
                 daily_usage_map[(med_name, d_str)] = qty
 
-            # 依 中文名稱 補強備用
             if '中文名稱' in df_logs_filtered.columns:
                 grouped_cht = df_logs_filtered.groupby(['中文名稱', 'day_str'])['領用數量'].sum().reset_index()
                 for _, g_row in grouped_cht.iterrows():
@@ -524,7 +521,7 @@ elif menu == "📊 用藥月報與學期統計表":
             st.warning(f"⚠️ 讀取領用紀錄計算每日用量時提醒：{e}")
 
     report_rows = []
-    excel_day_qty_list = [] # 記錄所有列的每日數量
+    excel_day_qty_list = []
 
     for idx, row in df_inventory.iterrows():
         eng_name = str(row.get('藥品名稱(英文)', '')).strip()
@@ -533,12 +530,10 @@ elif menu == "📊 用藥月報與學期統計表":
         stock = int(row.get('目前庫存', 0))
         expiry = str(row.get('有效期限', ''))
 
-        # 計算該藥品當月每日領用量
         day_quantities = []
         r_dict = {"藥品名稱\n(商品名/中文)": combined_name, "115年8月\n剩餘量": stock}
         
         for d in days:
-            # 優先以英文名稱對應，若無則嘗試中文名稱
             qty_used = daily_usage_map.get((eng_name, d), 0)
             if qty_used == 0 and cht_name:
                 qty_used = daily_usage_map.get((cht_name, d), 0)
@@ -549,8 +544,10 @@ elif menu == "📊 用藥月報與學期統計表":
         excel_day_qty_list.append(day_quantities)
         monthly_used_sum = sum(day_quantities)
 
+        # 增加「當月剩餘量」欄位
         r_dict.update({
             "當月使用\n總量": monthly_used_sum, 
+            "當月剩餘量": max(0, stock - monthly_used_sum),
             "購入量": 0, 
             "過期報銷": 0, 
             "公藥使用": 0,
@@ -579,10 +576,11 @@ elif menu == "📊 用藥月報與學期統計表":
     ws.append([title_text])
     ws.cell(row=1, column=1).font = Font(name="微軟正黑體", size=13, bold=True, color="1F4E78")
 
+    # Excel 表頭新增「當月剩餘量」
     excel_headers = [
         "藥品名稱\n(商品名/中文)", "115年8月\n剩餘量",
         *days,
-        "當月使用\n總量", "購入量", "過期報銷", "公藥使用", "115年9月\n期末剩餘量", "實體盤點\n數量", "有效期限",
+        "當月使用\n總量", "當月剩餘量", "購入量", "過期報銷", "公藥使用", "115年9月\n期末剩餘量", "實體盤點\n數量", "有效期限",
         "9月\n消耗量", "10月\n消耗量", "11月\n消耗量", "12月\n消耗量", "1月\n消耗量", "全學期\n使用總量"
     ]
     ws.append(excel_headers)
@@ -611,7 +609,7 @@ elif menu == "📊 用藥月報與學期統計表":
         bottom=Side(style='thin', color='D9D9D9')
     )
 
-    for col_idx in range(1, 38):
+    for col_idx in range(1, 39):
         cell = ws.cell(row=2, column=col_idx)
         cell.alignment = align_center
         cell.border = thin_border
@@ -621,7 +619,7 @@ elif menu == "📊 用藥月報與學期統計表":
         elif 3 <= col_idx <= 24:
             cell.fill = fill_gray
             cell.font = font_gray_bold
-        elif 25 <= col_idx <= 31:
+        elif 25 <= col_idx <= 32:
             cell.fill = fill_blue
             cell.font = font_white_bold
         else:
@@ -640,41 +638,46 @@ elif menu == "📊 用藥月報與學期統計表":
 
         data_row = [
             row["藥品名稱\n(商品名/中文)"], row["115年8月\n剩餘量"],
-            *day_qtys, # 帶入真實加總的每日領用數據
-            f"=SUM(C{r_idx}:X{r_idx})",
-            0, 0, 0,
-            f"=B{r_idx}+Z{r_idx}-Y{r_idx}-AA{r_idx}-AB{r_idx}",
-            f"=AC{r_idx}",
-            row["有效期限"],
-            m9_val, m10_val, m11_val, m12_val, m1_val,
-            f"=SUM(AF{r_idx}:AJ{r_idx})"
+            *day_qtys,
+            f"=SUM(C{r_idx}:X{r_idx})",                  # Y: 當月使用總量
+            f"=B{r_idx}-Y{r_idx}",                        # Z: 當月剩餘量 (=上月剩餘量-當月使用總量)
+            0,                                           # AA: 購入量
+            0,                                           # AB: 過期報銷
+            0,                                           # AC: 公藥使用
+            f"=Z{r_idx}+AA{r_idx}-AB{r_idx}-AC{r_idx}",  # AD: 115年9月期末剩餘量
+            f"=AD{r_idx}",                                # AE: 實體盤點數量
+            row["有效期限"],                              # AF: 有效期限
+            m9_val, m10_val, m11_val, m12_val, m1_val,   # AG~AK: 月消耗量
+            f"=SUM(AG{r_idx}:AK{r_idx})"                  # AL: 全學期使用總量
         ]
         ws.append(data_row)
 
-        for c_idx in range(1, 38):
+        for c_idx in range(1, 39):
             cell = ws.cell(row=r_idx, column=c_idx)
             cell.border = thin_border
             cell.alignment = align_center if c_idx > 1 else align_left
             cell.font = font_default
 
-            if c_idx in [2, 29]:
+            if c_idx in [2, 30]: # B (上月剩餘量), AD (期末剩餘量)
                 cell.font = font_red
-            elif c_idx == 25:
+            elif c_idx in [25, 26]: # Y (當月使用總量), Z (當月剩餘量) 高亮醒目
                 cell.fill = fill_data_yellow
                 cell.font = font_navy
-            elif c_idx == 37:
+            elif c_idx == 38: # AL (全學期使用總量)
                 cell.fill = fill_data_orange
                 cell.font = font_orange
 
+    # 設定各欄位寬度
     ws.column_dimensions['A'].width = 30
     ws.column_dimensions['B'].width = 12
     for c in range(3, 25):
         ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 5.5
     ws.column_dimensions['Y'].width = 12
-    for c in range(26, 31):
+    ws.column_dimensions['Z'].width = 12
+    for c in range(27, 32):
         ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 12
-    ws.column_dimensions['AE'].width = 14
-    for c in range(32, 38):
+    ws.column_dimensions['AF'].width = 14
+    for c in range(33, 39):
         ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 12
 
     output = io.BytesIO()
