@@ -477,7 +477,7 @@ elif menu == "📦 當前庫存總覽":
     st.dataframe(df_inventory.drop(columns=['display_name'], errors='ignore'), use_container_width=True, hide_index=True)
 
 # -----------------------------------------------------------------------------
-# 頁面 5：用藥月報與學期統計表 (含新增「當月剩餘量」欄位)
+# 頁面 5：用藥月報與學期統計表 (已移除重複欄位，統一為「當月剩餘量」)
 # -----------------------------------------------------------------------------
 elif menu == "📊 用藥月報與學期統計表":
     st.header("📊 國立臺北大學衛保組 藥品使用月報與全學期統計表")
@@ -543,16 +543,15 @@ elif menu == "📊 用藥月報與學期統計表":
 
         excel_day_qty_list.append(day_quantities)
         monthly_used_sum = sum(day_quantities)
+        rem_stock = max(0, stock - monthly_used_sum)
 
-        # 增加「當月剩餘量」欄位
         r_dict.update({
             "當月使用\n總量": monthly_used_sum, 
-            "當月剩餘量": max(0, stock - monthly_used_sum),
+            "當月剩餘量": rem_stock,
             "購入量": 0, 
             "過期報銷": 0, 
             "公藥使用": 0,
-            "115年9月\n期末剩餘量": stock, 
-            "實體盤點\n數量": stock, 
+            "實體盤點\n數量": rem_stock, 
             "有效期限": expiry,
             "9月\n消耗量": monthly_used_sum if month_num == 9 else 0, 
             "10月\n消耗量": monthly_used_sum if month_num == 10 else 0, 
@@ -576,11 +575,11 @@ elif menu == "📊 用藥月報與學期統計表":
     ws.append([title_text])
     ws.cell(row=1, column=1).font = Font(name="微軟正黑體", size=13, bold=True, color="1F4E78")
 
-    # Excel 表頭新增「當月剩餘量」
+    # Excel 表頭（已刪除多餘的 115年9月期末剩餘量）
     excel_headers = [
         "藥品名稱\n(商品名/中文)", "115年8月\n剩餘量",
         *days,
-        "當月使用\n總量", "當月剩餘量", "購入量", "過期報銷", "公藥使用", "115年9月\n期末剩餘量", "實體盤點\n數量", "有效期限",
+        "當月使用\n總量", "當月剩餘量", "購入量", "過期報銷", "公藥使用", "實體盤點\n數量", "有效期限",
         "9月\n消耗量", "10月\n消耗量", "11月\n消耗量", "12月\n消耗量", "1月\n消耗量", "全學期\n使用總量"
     ]
     ws.append(excel_headers)
@@ -609,7 +608,7 @@ elif menu == "📊 用藥月報與學期統計表":
         bottom=Side(style='thin', color='D9D9D9')
     )
 
-    for col_idx in range(1, 39):
+    for col_idx in range(1, 38):
         cell = ws.cell(row=2, column=col_idx)
         cell.alignment = align_center
         cell.border = thin_border
@@ -619,7 +618,7 @@ elif menu == "📊 用藥月報與學期統計表":
         elif 3 <= col_idx <= 24:
             cell.fill = fill_gray
             cell.font = font_gray_bold
-        elif 25 <= col_idx <= 32:
+        elif 25 <= col_idx <= 30:
             cell.fill = fill_blue
             cell.font = font_white_bold
         else:
@@ -639,31 +638,30 @@ elif menu == "📊 用藥月報與學期統計表":
         data_row = [
             row["藥品名稱\n(商品名/中文)"], row["115年8月\n剩餘量"],
             *day_qtys,
-            f"=SUM(C{r_idx}:X{r_idx})",                  # Y: 當月使用總量
-            f"=B{r_idx}-Y{r_idx}",                        # Z: 當月剩餘量 (=上月剩餘量-當月使用總量)
-            0,                                           # AA: 購入量
-            0,                                           # AB: 過期報銷
-            0,                                           # AC: 公藥使用
-            f"=Z{r_idx}+AA{r_idx}-AB{r_idx}-AC{r_idx}",  # AD: 115年9月期末剩餘量
-            f"=AD{r_idx}",                                # AE: 實體盤點數量
-            row["有效期限"],                              # AF: 有效期限
-            m9_val, m10_val, m11_val, m12_val, m1_val,   # AG~AK: 月消耗量
-            f"=SUM(AG{r_idx}:AK{r_idx})"                  # AL: 全學期使用總量
+            f"=SUM(C{r_idx}:X{r_idx})",                        # Y: 當月使用總量
+            f"=B{r_idx}+AA{r_idx}-Y{r_idx}-AB{r_idx}-AC{r_idx}", # Z: 當月剩餘量 (=上月剩餘量+購入量-當月使用-過期報銷-公藥使用)
+            0,                                                 # AA: 購入量
+            0,                                                 # AB: 過期報銷
+            0,                                                 # AC: 公藥使用
+            f"=Z{r_idx}",                                      # AD: 實體盤點數量 (=當月剩餘量)
+            row["有效期限"],                                    # AE: 有效期限
+            m9_val, m10_val, m11_val, m12_val, m1_val,         # AF~AJ: 月消耗量
+            f"=SUM(AF{r_idx}:AJ{r_idx})"                        # AK: 全學期使用總量
         ]
         ws.append(data_row)
 
-        for c_idx in range(1, 39):
+        for c_idx in range(1, 38):
             cell = ws.cell(row=r_idx, column=c_idx)
             cell.border = thin_border
             cell.alignment = align_center if c_idx > 1 else align_left
             cell.font = font_default
 
-            if c_idx in [2, 30]: # B (上月剩餘量), AD (期末剩餘量)
+            if c_idx in [2, 30]: # B (上月剩餘量), AD (實體盤點數量)
                 cell.font = font_red
-            elif c_idx in [25, 26]: # Y (當月使用總量), Z (當月剩餘量) 高亮醒目
+            elif c_idx in [25, 26]: # Y (當月使用總量), Z (當月剩餘量)
                 cell.fill = fill_data_yellow
                 cell.font = font_navy
-            elif c_idx == 38: # AL (全學期使用總量)
+            elif c_idx == 37: # AK (全學期使用總量)
                 cell.fill = fill_data_orange
                 cell.font = font_orange
 
@@ -674,10 +672,10 @@ elif menu == "📊 用藥月報與學期統計表":
         ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 5.5
     ws.column_dimensions['Y'].width = 12
     ws.column_dimensions['Z'].width = 12
-    for c in range(27, 32):
+    for c in range(27, 31):
         ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 12
-    ws.column_dimensions['AF'].width = 14
-    for c in range(33, 39):
+    ws.column_dimensions['AE'].width = 14
+    for c in range(32, 38):
         ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 12
 
     output = io.BytesIO()
