@@ -13,10 +13,10 @@ st.set_page_config(
     layout="wide"
 )
 
-# 全域強制高對比明亮風格 CSS 修正
+# 全域高對比明亮 UI CSS 修正
 st.markdown("""
     <style>
-    /* 1. 強制全域與所有組件使用明亮模式 (Light Mode) */
+    /* 1. 強制全域使用明亮模式 */
     :root {
         color-scheme: light !important;
     }
@@ -28,34 +28,28 @@ st.markdown("""
         color: #0f172a !important;
     }
 
-    /* 2. 標題與內文文字黑字高對比 */
+    /* 2. 所有文字與標題顏色 */
     p, span, label, h1, h2, h3, h4, .stMarkdown, div[data-testid="stMarkdownContainer"] * {
         color: #0f172a !important;
         opacity: 1 !important;
     }
 
-    /* 3. 輸入框本體（單行文字、數字、日期、下拉選單）強制純白底 + 淡灰邊框 */
+    /* 3. 強制所有輸入框、數字框、日期框純白底 + 淡灰邊框 */
     div[data-baseweb="input"],
     div[data-baseweb="base-input"],
     div[data-baseweb="select"] > div,
-    div[data-testid="stDateInput"] div[data-baseweb="input"] {
-        background-color: #ffffff !important;
-        border: 1px solid #cbd5e1 !important;
-        border-radius: 8px !important;
-    }
-
-    /* 輸入框內部文字 */
-    div[data-baseweb="input"] input,
-    div[data-baseweb="base-input"] input,
-    div[data-baseweb="select"] input,
-    textarea {
+    .stTextInput input, 
+    .stNumberInput input, 
+    .stDateInput input {
         background-color: #ffffff !important;
         color: #0f172a !important;
         -webkit-text-fill-color: #0f172a !important;
+        border: 1px solid #cbd5e1 !important;
+        border-radius: 8px !important;
         font-weight: 500 !important;
     }
 
-    /* 4. 多選標籤 (Multiselect Tags) 風格修正：柔和藍底深藍字 */
+    /* 4. 多選標籤 (Multiselect Tags) */
     div[data-baseweb="tag"] {
         background-color: #e0f2fe !important;
         border: 1px solid #bae6fd !important;
@@ -67,18 +61,17 @@ st.markdown("""
         font-weight: 600 !important;
     }
 
-    /* 5. 徹底修正日曆彈窗 (Popover & Calendar) 與下拉選單選單 */
+    /* 5. 日曆與下拉選單彈窗白底高對比 */
     div[data-baseweb="popover"],
     div[data-baseweb="popover"] > div,
     div[data-baseweb="calendar"],
     div[data-baseweb="menu"],
     ul[role="listbox"] {
         background-color: #ffffff !important;
-        border: 1px solid #e2e8f0 !important;
+        border: 1px solid #cbd5e1 !important;
         box-shadow: 0 10px 25px rgba(0,0,0,0.1) !important;
     }
 
-    /* 日曆內部所有文字、標題、星期與日期數字強制清晰黑字 */
     div[data-baseweb="calendar"] *,
     div[data-baseweb="calendar"] button,
     div[data-baseweb="calendar"] div,
@@ -88,14 +81,12 @@ st.markdown("""
         background-color: transparent !important;
     }
 
-    /* 日曆日期 Hover 懸浮效果 */
     div[data-baseweb="calendar"] [role="gridcell"]:hover,
     div[data-baseweb="calendar"] button:hover {
         background-color: #f1f5f9 !important;
         border-radius: 50% !important;
     }
 
-    /* 當前選中的日期 (翡翠綠圓底白字) */
     div[data-baseweb="calendar"] [aria-selected="true"] {
         background-color: #0d9488 !important;
         border-radius: 50% !important;
@@ -107,7 +98,7 @@ st.markdown("""
         font-weight: bold !important;
     }
 
-    /* 6. 側邊欄與表單外框簡潔美化 */
+    /* 6. 側邊欄與表單樣式 */
     section[data-testid="stSidebar"] {
         background-color: #f1f5f9 !important;
         border-right: 1px solid #e2e8f0 !important;
@@ -147,8 +138,24 @@ def load_data():
         df = conn.read(worksheet="庫存", ttl=0)
         return df
     except Exception as e:
-        st.error(f"❌ 讀取試算表失敗：{e}")
+        st.error(f"❌ 讀取『庫存』試算表失敗，請確認 Google Sheet 中有『庫存』工作表。細節：{e}")
         st.stop()
+
+# 寫入 Log 輔助函式（自動相容「記錄」與「紀錄」兩種命名）
+def append_to_log_sheet(connection, possible_sheet_names, new_logs_df):
+    for sheet_name in possible_sheet_names:
+        try:
+            try:
+                df_existing = connection.read(worksheet=sheet_name, ttl=0)
+                df_updated = pd.concat([df_existing, new_logs_df], ignore_index=True)
+            except Exception:
+                df_updated = new_logs_df
+            
+            connection.update(worksheet=sheet_name, data=df_updated)
+            return True, sheet_name
+        except Exception:
+            continue
+    return False, possible_sheet_names[0]
 
 st.sidebar.title("📌 功能選單")
 if st.sidebar.button("🔄 手動刷新雲端資料"):
@@ -207,7 +214,7 @@ if menu == "💊 多項藥品領用登記":
                     quantities[item] = qty
                 st.markdown("<hr style='margin: 8px 0;'>", unsafe_allow_html=True)
 
-            submit_btn = st.form_submit_button("✅ 完成登記並更新庫存")
+            submit_btn = st.form_submit_button("✅ 確認領用並更新庫存")
 
             if submit_btn:
                 log_time_str = f"{record_date.strftime('%Y-%m-%d')} {datetime.now().strftime('%H:%M:%S')}"
@@ -218,28 +225,34 @@ if menu == "💊 多項藥品領用登記":
                     new_stock = max(0, old_stock - qty)
                     df_inventory.loc[idx, '目前庫存'] = new_stock
                     new_logs.append({
-                        "領用時間": log_time_str,
-                        "藥品名稱": df_inventory.loc[idx, '藥品名稱(英文)'],
-                        "中文名稱": df_inventory.loc[idx, '中文名稱'],
-                        "領用數量": qty,
-                        "剩餘庫存": new_stock,
-                        "備註": remarks
+                        "領用時間": str(log_time_str),
+                        "藥品名稱": str(df_inventory.loc[idx, '藥品名稱(英文)']),
+                        "中文名稱": str(df_inventory.loc[idx, '中文名稱']),
+                        "領用數量": int(qty),
+                        "剩餘庫存": int(new_stock),
+                        "備註": str(remarks)
                     })
 
+                # 1. 更新庫存主表
+                inventory_success = False
                 try:
-                    df_save = df_inventory.drop(columns=['display_name'])
+                    df_save = df_inventory.drop(columns=['display_name'], errors='ignore')
                     conn.update(worksheet="庫存", data=df_save)
-                    try:
-                        df_logs_existing = conn.read(worksheet="領用紀錄", ttl=0)
-                        df_logs_updated = pd.concat([df_logs_existing, pd.DataFrame(new_logs)], ignore_index=True)
-                    except Exception:
-                        df_logs_updated = pd.DataFrame(new_logs)
-                    conn.update(worksheet="領用紀錄", data=df_logs_updated)
-                    st.success(f"🎉 領用登記成功！紀錄日期為 `{record_date}`，庫存與 Log 已更新。")
-                    st.cache_data.clear()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ 更新失敗：{e}")
+                    inventory_success = True
+                except Exception as e_inv:
+                    st.error(f"❌ 庫存更新失敗：{e_inv}")
+
+                # 2. 自動判斷寫入「領用記錄」或「領用紀錄」
+                if inventory_success:
+                    df_logs_new = pd.DataFrame(new_logs)
+                    success, target_sheet = append_to_log_sheet(conn, ["領用記錄", "領用紀錄"], df_logs_new)
+                    
+                    if success:
+                        st.success(f"🎉 領用登記成功！紀錄已同步寫入『{target_sheet}』分頁，庫存已更新。")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.warning("⚠️ **庫存已成功扣減！** 但寫入領用紀錄失敗，請檢查 Google 試算表權限。")
 
 # 頁面 2：新增藥品進貨/補貨登記
 elif menu == "📥 藥品進貨/補貨登記":
@@ -286,29 +299,22 @@ elif menu == "📥 藥品進貨/補貨登記":
 
                 # 2. 建立進貨 Log
                 purchase_log = {
-                    "進貨時間": inbound_time_str,
-                    "藥品名稱": df_inventory.loc[idx, '藥品名稱(英文)'],
-                    "中文名稱": df_inventory.loc[idx, '中文名稱'],
-                    "購入數量": purchase_qty,
-                    "新批號": new_batch,
-                    "有效期限": expiry_str,
-                    "更新後總庫存": new_qty,
-                    "備註": vendor_remark
+                    "進貨時間": str(inbound_time_str),
+                    "藥品名稱": str(df_inventory.loc[idx, '藥品名稱(英文)']),
+                    "中文名稱": str(df_inventory.loc[idx, '中文名稱']),
+                    "購入數量": int(purchase_qty),
+                    "新批號": str(new_batch),
+                    "有效期限": str(expiry_str),
+                    "更新後總庫存": int(new_qty),
+                    "備註": str(vendor_remark)
                 }
 
                 try:
-                    df_save = df_inventory.drop(columns=['display_name'])
+                    df_save = df_inventory.drop(columns=['display_name'], errors='ignore')
                     conn.update(worksheet="庫存", data=df_save)
                     
-                    try:
-                        try:
-                            df_inbound_existing = conn.read(worksheet="進貨紀錄", ttl=0)
-                            df_inbound_updated = pd.concat([df_inbound_existing, pd.DataFrame([purchase_log])], ignore_index=True)
-                        except Exception:
-                            df_inbound_updated = pd.DataFrame([purchase_log])
-                        conn.update(worksheet="進貨紀錄", data=df_inbound_updated)
-                    except Exception:
-                        st.warning("⚠️ 庫存已成功更新！但寫入『進貨紀錄』分頁失敗，請確認 Google 試算表中是否已建立名為 『進貨紀錄』 的分頁。")
+                    df_inbound_new = pd.DataFrame([purchase_log])
+                    append_to_log_sheet(conn, ["進貨紀錄", "進貨記錄"], df_inbound_new)
 
                     st.success(f"🎉 進貨完成！`{selected_med}` 庫存已由 {old_qty} 增加至 {new_qty}，批號更新為 `{new_batch}`。")
                     st.cache_data.clear()
