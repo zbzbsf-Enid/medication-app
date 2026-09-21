@@ -93,30 +93,8 @@ if 'inbound_stage' not in st.session_state:
 # -----------------------------------------------------------------------------
 # 2. 資料庫連線與資料讀取輔助函式
 # -----------------------------------------------------------------------------
-creds_dict = {}
-
-if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-    conn_secrets = dict(st.secrets["connections"]["gsheets"])
-    if "service_account" in conn_secrets:
-        creds_dict = dict(conn_secrets["service_account"])
-    else:
-        creds_dict = conn_secrets
-elif "gcp_service_account" in st.secrets:
-    creds_dict = dict(st.secrets["gcp_service_account"])
-
-# 自動修復私鑰換行問題
-if "private_key" in creds_dict and isinstance(creds_dict["private_key"], str):
-    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1fqR5nvOGTOnKljryhMwfbAUaVZo5L11Jtsm823Hf8hU/edit"
-
 try:
-    # 💡 關鍵：將憑證透過 service_account= 傳入，避免 direct kwargs 參數撞名
-    conn = st.connection(
-        'medication_app',
-        type=GSheetsConnection,
-        service_account=creds_dict
-    )
+    conn = st.connection('gsheets', type=GSheetsConnection)
 except Exception as e:
     st.error(f'❌ 無法建立 Google 連線：{e}')
     st.stop()
