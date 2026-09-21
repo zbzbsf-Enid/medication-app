@@ -5,275 +5,332 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime, date
 import zoneinfo
 
-# ==============================================================================
-# 1. 頁面基礎設定與時區配置
-# ==============================================================================
+# 頁面基本設定
 st.set_page_config(
     page_title="國立臺北大學衛保組 藥品管理系統",
     page_icon="💊",
     layout="wide"
 )
 
-# 台灣標準時區 (GMT+8)
-TAIWAN_TZ = zoneinfo.ZoneInfo("Asia/Taipei")
+# 系統定義標準欄位
+STANDARD_COLUMNS = [
+    "藥品名稱(英文)", "中文名稱", "批號", "目前庫存", "有效期限", "用途", "狀態"
+]
+LOG_COLUMNS = [
+    "紀錄時間", "藥品名稱(英文)", "中文名稱", "批號", "領用數量", "領用人/用途", "操作類型", "備註"
+]
 
-# 統一標準欄位定義（解決欄位錯位與出現 None 的問題）
-INVENTORY_COLUMNS = ['藥品名稱(英文)', '中文名稱', '批號', '目前庫存', '有效期限', '用途', '狀態']
-LOG_COLUMNS = ['領用時間', '藥品名稱', '中文名稱', '領用數量', '剩餘庫存', '備註']
+# 取得台北時間
+def get_taipei_now():
+    tz = zoneinfo.ZoneInfo("Asia/Taipei")
+    return datetime.now(tz)
 
-# ==============================================================================
-# 2. 連接 Google Sheets 雲端資料庫
-# ==============================================================================
+# 1. 初始化 gspread 連線 (快取機制)
 @st.cache_resource
 def init_gspread():
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
-    # 讀取 Streamlit secrets 設定
-    credentials = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=scopes
-    )
+    
+    # 彈性存取 Secrets
+    if "gcp_service_account" in st.secrets:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+    elif "type" in st.secrets and st.secrets["type"] == "service_account":
+        creds_dict = dict(st.secrets)
+    else:
+        st.error("❌ 尚未在 Streamlit Secrets 中設定 `[gcp_service_account]`！")
+        st.stop()
+
+    if "private_key" in creds_dict:
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+
+    credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(credentials)
 
+# 2. 開啟 Google 試算表 (支援 ID 與 檔名雙重開啟)
 def get_spreadsheet():
     gc = init_gspread()
-    # 取得 Secrets 中的名稱或 ID
-    target = st.secrets.get("spreadsheet_name", "")
+    target = st.secrets.get("spreadsheet_name", "").strip()
     
-    # 優先嘗試當作「試算表 ID」開啟 (open_by_key)
+    if not target:
+        st.error("❌ 未在 Secrets 中設定 `spreadsheet_name`！")
+        st.stop()
+        
+    # 優先嘗試用 試算表 ID (open_by_key) 開啟
     try:
         return gc.open_by_key(target)
     except Exception:
         pass
-        
-    # 若失敗，嘗試當作「試算表檔名」開啟 (open)
+
+    # 若失敗，嘗試用 試算表檔名 (open) 開啟
     try:
         return gc.open(target)
     except Exception:
-        st.error(f"❌ 無法讀取試算表（設定值：'{target}'）。\n\n請確認：\n1. 試算表已「共用」給 client_email\n2. Google Drive API 已在 GCP 啟用")
+        email = st.secrets.get("gcp_service_account", {}).get("client_email", "您的機器人 Email")
+        st.error(
+            f"❌ 無法存取試算表（設定值：`{target}`）。\n\n"
+            f"請確認以下事項：\n"
+            f"1. 已將 Google 試算表「共用」給：`{email}` (權限：編輯者)\n"
+            f"2. Secrets 中的 `spreadsheet_name` 為純 ID (不含 `/edit` 或 `#gid=`) 或精確檔名\n"
+            f"3. Google Cloud Console 已啟用 Google Drive API 與 Google Sheets API"
+        )
         st.stop()
-        
-# 載入庫存資料並清洗
+
+# 3. 讀取庫存資料
+@st.cache_data(ttl=5)
 def load_inventory_data():
     sh = get_spreadsheet()
-    worksheet = sh.worksheet("庫存")
-    records = worksheet.get_all_records()
-    df = pd.DataFrame(records)
+    try:
+        ws = sh.worksheet("庫存總覽")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title="庫存總覽", rows=100, cols=10)
+        ws.append_row(STANDARD_COLUMNS)
+        
+    data = ws.get_all_records()
+    df = pd.DataFrame(data)
+    
+    # 動態補充缺失的標準欄位
+    for col in STANDARD_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+            
+    df = df[STANDARD_COLUMNS]
+    df["目前庫存"] = pd.to_numeric(df["目前庫存"], errors="coerce").fillna(0).astype(int)
+    return ws, df
 
-    if df.empty:
-        df = pd.DataFrame(columns=INVENTORY_COLUMNS)
-    else:
-        # 強制只保留標準 7 個欄位，舊有的 "用途/備註" 或 "last_updated" 會被自動忽略
-        for col in INVENTORY_COLUMNS:
-            if col not in df.columns:
-                df[col] = ""
-        df = df[INVENTORY_COLUMNS]
-
-        # 資料型態清洗與轉換
-        df['目前庫存'] = pd.to_numeric(df['目前庫存'], errors='coerce').fillna(0).astype(int)
-        df['用途'] = df['用途'].astype(str).replace({'None': '', 'nan': ''})
-        df['狀態'] = df['狀態'].apply(lambda x: "OK" if str(x).strip().upper() in ["OK", "NONE", ""] else str(x))
-
-    return worksheet, df
-
-# 載入領用紀錄
+# 4. 讀取領用異動紀錄
+@st.cache_data(ttl=5)
 def load_logs_data():
     sh = get_spreadsheet()
-    worksheet = sh.worksheet("領用紀錄")
-    records = worksheet.get_all_records()
-    df = pd.DataFrame(records)
+    try:
+        ws = sh.worksheet("異動紀錄")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title="異動紀錄", rows=100, cols=10)
+        ws.append_row(LOG_COLUMNS)
+        
+    data = ws.get_all_records()
+    df = pd.DataFrame(data)
+    for col in LOG_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+    return ws, df[LOG_COLUMNS]
 
-    if df.empty:
-        df = pd.DataFrame(columns=LOG_COLUMNS)
-    else:
-        for col in LOG_COLUMNS:
-            if col not in df.columns:
-                df[col] = ""
-        df = df[LOG_COLUMNS]
-
-    return worksheet, df
-
-# ==============================================================================
-# 3. 主頁面標題與分頁選單
-# ==============================================================================
+# ----------------- 主介面選單 -----------------
 st.title("💊 國立臺北大學衛保組 藥品管理系統")
 
-tab1, tab2, tab3 = st.tabs(["📦 當前庫存總覽與建置", "💊 藥品領用登記", "📜 更正歷史領用紀錄"])
+tab1, tab2, tab3 = st.tabs([
+    "📦 當前庫存總覽與建置", 
+    "✍️ 藥品領用登記", 
+    "📜 更正歷史領用紀錄"
+])
 
-# ------------------------------------------------------------------------------
-# TAB 1: 當前庫存總覽與新建置藥品
-# ------------------------------------------------------------------------------
+# ==================== Tab 1: 當前庫存總覽與建置 ====================
 with tab1:
-    st.header("📦 當前藥品庫存總覽")
+    st.subheader("📦 當前藥品庫存總覽")
     ws_inv, df_inv = load_inventory_data()
-
-    # 顯示庫存表格
-    st.dataframe(df_inv, use_container_width=True, hide_index=True)
-
-    # 一鍵修復 Google Sheet 標題列按鈕（整理試算表第 1 列）
-    with st.expander("🛠️ 試算表欄位結構維護"):
-        st.write("若雲端 Google Sheet 標題列出現 `用途/備註` 或 `last_updated` 等舊欄位，可點擊下方按鈕重置標題列：")
-        if st.button("重置雲端庫存表欄位為標準 7 欄"):
-            ws_inv.clear()
-            ws_inv.append_row(INVENTORY_COLUMNS)
-            # 寫回清洗過後的內容
-            ws_inv.append_rows(df_inv.values.tolist())
-            st.success("雲端試算表標題列已重置完成！")
-            st.rerun()
-
-    st.markdown("---")
-    st.subheader("➕ 新建置藥品")
-    
-    with st.form("add_medicine_form"):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            e_name = st.text_input("藥品名稱 (英文)*")
-            c_name = st.text_input("中文名稱*")
-        with col2:
-            batch_no = st.text_input("批號*")
-            initial_stock = st.number_input("初始庫存數量*", min_value=0, value=100, step=1)
-        with col3:
-            exp_date = st.date_input("有效期限*", date(2028, 1, 1))
-            purpose = st.text_input("用途")
-
-        submit_add = st.form_submit_button("新增藥品到庫存")
-
-        if submit_add:
-            if not e_name or not c_name or not batch_no:
-                st.error("請填寫所有帶有 * 的必填欄位！")
-            else:
-                new_row = [
-                    e_name.strip(),
-                    c_name.strip(),
-                    batch_no.strip(),
-                    int(initial_stock),
-                    exp_date.strftime("%Y-%m-%d"),
-                    purpose.strip(),
-                    "OK"
-                ]
-                ws_inv.append_row(new_row)
-                st.success(f"藥品 {c_name} ({e_name}) 新建置成功！")
-                st.rerun()
-
-# ------------------------------------------------------------------------------
-# TAB 2: 藥品領用登記（修正時區關鍵點）
-# ------------------------------------------------------------------------------
-with tab2:
-    st.header("💊 藥品領用登記")
-    ws_inv, df_inv = load_inventory_data()
-    ws_log, df_log = load_logs_data()
 
     if df_inv.empty:
-        st.warning("目前庫存無任何藥品資料，請先建置藥品。")
+        st.info("目前庫存表中無資料。")
     else:
-        with st.form("dispense_form"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # 下拉選單顯示藥品
-                med_options = [f"{row['中文名稱']} ({row['藥品名稱(英文)']}) - 剩餘: {row['目前庫存']}" for _, row in df_inv.iterrows()]
-                selected_med_idx = st.selectbox("選擇領用藥品", range(len(med_options)), format_func=lambda x: med_options[x])
-                dispense_qty = st.number_input("領用數量", min_value=1, value=1, step=1)
-
-            with col2:
-                record_date = st.date_input("領用日期", value=date.today())
-                remarks = st.text_input("備註（例如：領用人 / 班級 / 病患）", value="")
-
-            submit_dispense = st.form_submit_button("確認領用登記")
-
-            if submit_dispense:
-                target_row = df_inv.iloc[selected_med_idx]
-                current_stock = target_row['Currently Stock'] if 'Currently Stock' in target_row else target_row['目前庫存']
-
-                if dispense_qty > current_stock:
-                    st.error(f"領用數量 ({dispense_qty}) 大於目前庫存量 ({current_stock})！")
-                else:
-                    # 💡【關鍵修正：精確結合台灣時間 GMT+8】
-                    now_taiwan_time = datetime.now(TAIWAN_TZ).time()
-                    combined_dt = datetime.combine(record_date, now_taiwan_time)
-                    log_time_str = combined_dt.strftime("%Y-%m-%d %H:%M:%S")
-
-                    new_stock = current_stock - dispense_qty
-
-                    # 1. 更新庫存工作表 (更新特定 Row 的庫存量)
-                    # gspread 列號從 2 開始 (1 是 Header)
-                    sheet_row_num = selected_med_idx + 2 
-                    stock_col_idx = INVENTORY_COLUMNS.index('目前庫存') + 1
-                    ws_inv.update_cell(sheet_row_num, stock_col_idx, int(new_stock))
-
-                    # 2. 新增至領用紀錄工作表
-                    new_log_row = [
-                        log_time_str,
-                        target_row['藥品名稱(英文)'],
-                        target_row['中文名稱'],
-                        int(dispense_qty),
-                        int(new_stock),
-                        remarks
-                    ]
-                    ws_log.append_row(new_log_row)
-
-                    st.success(f"已成功登記領用！領用時間記錄為：{log_time_str}")
-                    st.rerun()
-
-# ------------------------------------------------------------------------------
-# TAB 3: 更正歷史領用紀錄
-# ------------------------------------------------------------------------------
-with tab3:
-    st.header("更正歷史領用紀錄")
-    ws_log, df_log = load_logs_data()
-
-    if df_log.empty:
-        st.info("目前尚無任何歷史領用紀錄。")
-    else:
-        st.write("📋 目前從雲端『領用紀錄』讀取到的最近歷史紀錄（顯示前 20 筆）：")
+        # 計算過期與預警狀態
+        today_str = get_taipei_now().strftime("%Y-%m-%d")
         
-        # 依照紀錄反向排序（最新紀錄在前）
-        df_log_recent = df_log.tail(20).iloc[::-1].copy()
-        st.dataframe(df_log_recent, use_container_width=True)
+        def update_status(row):
+            exp = str(row["有效期限"]).strip()
+            if not exp or exp == "None":
+                return "正常"
+            try:
+                exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
+                today_date = date.today()
+                days_left = (exp_date - today_date).days
+                if days_left < 0:
+                    return "⚠️ 已過期"
+                elif days_left <= 90:
+                    return "⚡ 即將到期"
+                else:
+                    return "正常"
+            except ValueError:
+                return "格式錯誤"
 
+        df_inv["狀態"] = df_inv.apply(update_status, axis=1)
+        
+        # 庫存過低或過期警告
+        expired_count = (df_inv["狀態"] == "⚠️ 已過期").sum()
+        warning_count = (df_inv["狀態"] == "⚡ 即將到期").sum()
+        
+        col_m1, col_m2, col_m3 = st.columns(3)
+        col_m1.metric("藥品品項總數", len(df_inv))
+        col_m2.metric("即將到期品項 (90天內)", warning_count, delta_color="inverse")
+        col_m3.metric("已過期品項", expired_count, delta_color="inverse")
+
+        st.dataframe(df_inv, use_container_width=True)
+
+    st.markdown("---")
+    
+    # 新增藥品品項
+    with st.expander("➕ 新增藥品 / 新增批號登記"):
+        with st.form("add_drug_form", clear_on_submit=True):
+            col_a1, col_a2 = st.columns(2)
+            eng_name = col_a1.text_input("藥品名稱 (英文) *").strip()
+            chn_name = col_a2.text_input("中文名稱").strip()
+            
+            col_b1, col_b2, col_b3 = st.columns(3)
+            batch_no = col_b1.text_input("批號 *").strip()
+            qty = col_b2.number_input("初始庫存數量 *", min_value=1, value=1, step=1)
+            exp_date_val = col_b3.date_input("有效期限", value=date.today())
+            
+            usage_note = st.text_input("用途說明").strip()
+            
+            submitted = st.form_submit_button("確認新增藥品")
+            if submitted:
+                if not eng_name or not batch_no:
+                    st.error("請務必填寫「英文名稱」與「批號」！")
+                else:
+                    exp_str = exp_date_val.strftime("%Y-%m-%d")
+                    new_row = [eng_name, chn_name, batch_no, int(qty), exp_str, usage_note, "正常"]
+                    
+                    ws_inv.append_row(new_row)
+                    
+                    # 寫入異動紀錄
+                    ws_log, _ = load_logs_data()
+                    now_str = get_taipei_now().strftime("%Y-%m-%d %H:%M:%S")
+                    ws_log.append_row([now_str, eng_name, chn_name, batch_no, qty, "建置入庫", "新增藥品", usage_note])
+                    
+                    st.cache_data.clear()
+                    st.success(f"成功新增藥品：{eng_name} ({batch_no})，數量：{qty}")
+                    st.rerun()
+
+    # 智慧維護工具
+    with st.expander("🛠️ 系統維護工具"):
+        st.write("若試算表欄位順序錯亂或標頭遺失，可使用以下按鈕重新修復與對齊第一行標頭。")
+        if st.button("🔄 智慧校正並修復試算表標頭"):
+            ws_inv.update("A1:G1", [STANDARD_COLUMNS])
+            ws_log, _ = load_logs_data()
+            ws_log.update("A1:H1", [LOG_COLUMNS])
+            st.cache_data.clear()
+            st.success("表頭欄位已修復對齊為標準格式！")
+            st.rerun()
+
+# ==================== Tab 2: 藥品領用登記 ====================
+with tab2:
+    st.subheader("✍️ 藥品領用登記")
+    ws_inv, df_inv = load_inventory_data()
+
+    if df_inv.empty:
+        st.warning("目前庫存表中無可領用的藥品資料。")
+    else:
+        # 過濾出有庫存的藥品選項
+        df_available = df_inv[df_inv["目前庫存"] > 0].copy()
+        
+        if df_available.empty:
+            st.warning("當前所有藥品庫存皆為 0，請先進行藥品建置補貨。")
+        else:
+            # 建立選單格式: 英文名稱 | 中文名稱 | 批號 (剩餘: X)
+            df_available["select_label"] = df_available.apply(
+                lambda r: f"{r['藥品名稱(英文)']} ({r['中文名稱']}) - 批號:{r['批號']} [剩餘: {r['目前庫存']}]", axis=1
+            )
+            
+            selected_label = st.selectbox("選擇領用藥品品項 *", df_available["select_label"].tolist())
+            selected_row = df_available[df_available["select_label"] == selected_label].iloc[0]
+            
+            current_stock = int(selected_row["目前庫存"])
+            eng_name = selected_row["藥品名稱(英文)"]
+            chn_name = selected_row["中文名稱"]
+            batch_no = selected_row["批號"]
+            
+            with st.form("dispense_form", clear_on_submit=True):
+                col_d1, col_d2 = st.columns(2)
+                dispense_qty = col_d1.number_input("領用數量 *", min_value=1, max_value=current_stock, value=1, step=1)
+                recipient = col_d2.text_input("領用人 / 用途說明 *").strip()
+                log_remark = st.text_input("備註 (可填寫病歷號或細項)").strip()
+                
+                btn_dispense = st.form_submit_button("確認扣庫並登記領用")
+                
+                if btn_dispense:
+                    if not recipient:
+                        st.error("請填寫領用人或用途說明！")
+                    else:
+                        # 搜尋試算表中對應的列數 (Row index)
+                        cell = ws_inv.find(batch_no, in_column=3) # 第3欄為批號
+                        if cell:
+                            row_idx = cell.row
+                            new_stock = current_stock - int(dispense_qty)
+                            
+                            # 更新庫存欄 (第 4 欄)
+                            ws_inv.update_cell(row_idx, 4, new_stock)
+                            
+                            # 寫入異動紀錄
+                            ws_log, _ = load_logs_data()
+                            now_str = get_taipei_now().strftime("%Y-%m-%d %H:%M:%S")
+                            ws_log.append_row([
+                                now_str, eng_name, chn_name, batch_no, int(dispense_qty), recipient, "領用扣庫", log_remark
+                            ])
+                            
+                            st.cache_data.clear()
+                            st.success(f"領用登記成功！{eng_name} 扣減 {dispense_qty}，剩餘庫存：{new_stock}")
+                            st.rerun()
+                        else:
+                            st.error("更新失敗：找不到該藥品批號所在的列。")
+
+# ==================== Tab 3: 更正歷史領用紀錄 ====================
+with tab3:
+    st.subheader("📜 歷史領用異動紀錄與更正")
+    ws_log, df_log = load_logs_data()
+    
+    if df_log.empty:
+        st.info("目前尚無任何領用或異動紀錄。")
+    else:
+        # 反轉順序，最新紀錄顯示在最上面
+        df_display = df_log.iloc[::-1].reset_index(drop=True)
+        st.dataframe(df_display, use_container_width=True)
+        
         st.markdown("---")
-        st.subheader("請選擇欲修改或撤銷的該筆紀錄：")
-
-        # 建立格式化下拉選單列表
-        log_options = {}
-        for idx, row in df_log_recent.iterrows():
-            # gspread row 索引等於 Pandas index + 2 (Header佔1行)
-            excel_row_num = idx + 2
-            label = f"行號 {excel_row_num}: [{row['領用時間']}] {row['藥品名稱']} - 原領用量: {row['領用數量']}"
-            log_options[label] = {
-                'row_num': excel_row_num,
-                'data': row
-            }
-
-        selected_label = st.selectbox("選擇紀錄", list(log_options.keys()))
-
-        if selected_label:
-            target_info = log_options[selected_label]
-            row_num = target_info['row_num']
-            log_data = target_info['data']
-
-            col_action1, col_action2 = st.columns(2)
-
-            with col_action1:
-                st.write("🔧 **修改領用數量**")
-                new_qty = st.number_input("新領用數量", min_value=1, value=int(log_data['領用數量']))
-                if st.button("更新此筆紀錄數量"):
-                    # 計算數量差值以調回庫存（簡單修正示範）
-                    qty_diff = int(log_data['領用數量']) - new_qty
+        st.subheader("🔄 紀錄沖銷 / 錯誤更正")
+        st.caption("如先前領用登記數量或品項填寫錯誤，可在下方選擇紀錄進行「庫存回補與沖銷紀錄」。")
+        
+        # 篩選出可更正的紀錄 (領用扣庫)
+        dispense_logs = df_log[df_log["操作類型"] == "領用扣庫"].copy()
+        
+        if not dispense_logs.empty:
+            dispense_logs["revert_label"] = dispense_logs.apply(
+                lambda r: f"[{r['紀錄時間']}] {r['藥品名稱(英文)']} - 批號:{r['批號']} - 領用:{r['領用數量']} (領用人:{r['領用人/用途']})", axis=1
+            )
+            
+            selected_revert_label = st.selectbox("選擇欲更正沖銷的歷史紀錄", dispense_logs["revert_label"].tolist())
+            revert_item = dispense_logs[dispense_logs["revert_label"] == selected_revert_label].iloc[0]
+            
+            revert_reason = st.text_input("請輸入更正/沖銷原因 (必填)").strip()
+            
+            if st.button("確認沖銷此紀錄並歸還庫存"):
+                if not revert_reason:
+                    st.error("請務必填寫更正/沖銷原因！")
+                else:
+                    target_batch = revert_item["批號"]
+                    qty_to_restore = int(revert_item["領用數量"])
+                    eng_n = revert_item["藥品名稱(英文)"]
+                    chn_n = revert_item["中文名稱"]
                     
-                    # 更新紀錄表的數量
-                    qty_col_idx = LOG_COLUMNS.index('領用數量') + 1
-                    ws_log.update_cell(row_num, qty_col_idx, new_qty)
+                    # 找到庫存表位置並歸還庫存
+                    ws_inv, df_inv = load_inventory_data()
+                    cell = ws_inv.find(target_batch, in_column=3)
                     
-                    st.success(f"行號 {row_num} 紀錄已更新為 {new_qty}！")
-                    st.rerun()
-
-            with col_action2:
-                st.write("❌ **撤銷/刪除紀錄**")
-                st.write("注意：刪除該紀錄將不復存在。")
-                if st.button("刪除此筆領用紀錄", type="primary"):
-                    ws_log.delete_rows(row_num)
-                    st.success(f"已刪除行號 {row_num} 之紀錄！")
-                    st.rerun()
+                    if cell:
+                        row_idx = cell.row
+                        curr_qty = int(ws_inv.cell(row_idx, 4).value or 0)
+                        updated_qty = curr_qty + qty_to_restore
+                        
+                        # 加回庫存
+                        ws_inv.update_cell(row_idx, 4, updated_qty)
+                        
+                        # 寫入沖銷紀錄
+                        now_str = get_taipei_now().strftime("%Y-%m-%d %H:%M:%S")
+                        ws_log.append_row([
+                            now_str, eng_n, chn_n, target_batch, qty_to_restore, "系統沖銷歸還", "錯誤更正", f"沖銷原紀錄({revert_item['紀錄時間']}) - 原因: {revert_reason}"
+                        ])
+                        
+                        st.cache_data.clear()
+                        st.success(f"已成功沖銷！{eng_n} (批號:{target_batch}) 已歸還庫存 {qty_to_restore}，目前總庫存為：{updated_qty}")
+                        st.rerun()
+                    else:
+                        st.error("歸還失敗：在當前庫存表中找不到對應的批號。")
