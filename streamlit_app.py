@@ -91,32 +91,31 @@ if 'inbound_stage' not in st.session_state:
     st.session_state.inbound_stage = 'input'
 
 # -----------------------------------------------------------------------------
-# 2. 資料庫連線與資料讀取輔助函式 (自動處理金鑰與試算表網址)
+# 2. 資料庫連線與資料讀取輔助函式 (使用自訂連線名稱避免參數衝突)
 # -----------------------------------------------------------------------------
-gs_secrets = {}
+creds_dict = {}
 if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-    gs_secrets = dict(st.secrets["connections"]["gsheets"])
+    creds_dict = dict(st.secrets["connections"]["gsheets"])
 elif "gcp_service_account" in st.secrets:
-    gs_secrets = dict(st.secrets["gcp_service_account"])
+    creds_dict = dict(st.secrets["gcp_service_account"])
 
-# 💡 關鍵修正：剔除字典內的 type 欄位，避免與 type=GSheetsConnection 參數重複衝突
-gs_secrets.pop("type", None)
+# 剔除字典內的 type 欄位，避免參數重複
+creds_dict.pop("type", None)
 
 # 修復私鑰中 \n 換行字元問題
-if "private_key" in gs_secrets:
-    gs_secrets["private_key"] = gs_secrets["private_key"].replace("\\n", "\n")
+if "private_key" in creds_dict:
+    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
 # 自動補上預設 Google 試算表網址
-if "spreadsheet" not in gs_secrets:
-    gs_secrets["spreadsheet"] = "https://docs.google.com/spreadsheets/d/1fqR5nvOGTOnKljryhMwfbAUaVZo5L11Jtsm823Hf8hU/edit"
+if "spreadsheet" not in creds_dict:
+    creds_dict["spreadsheet"] = "https://docs.google.com/spreadsheets/d/1fqR5nvOGTOnKljryhMwfbAUaVZo5L11Jtsm823Hf8hU/edit"
 
 try:
-    conn = st.connection('gsheets', type=GSheetsConnection, **gs_secrets)
+    # 使用自訂連線名稱 'medication_gsheets'，防止 Streamlit 自動重複讀取 Secrets
+    conn = st.connection('medication_gsheets', type=GSheetsConnection, **creds_dict)
 except Exception as e:
     st.error(f'❌ 無法建立 Google 連線：{e}')
     st.stop()
-
-
 # 效期自動預警與警告通知
 def check_expiration_warnings(df):
     if df is None or df.empty:
