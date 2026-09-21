@@ -91,31 +91,50 @@ if 'inbound_stage' not in st.session_state:
     st.session_state.inbound_stage = 'input'
 
 # -----------------------------------------------------------------------------
-# 2. 資料庫連線與資料讀取輔助函式 (使用自訂連線名稱避免參數衝突)
+# 2. 資料庫連線與資料讀取輔助函式 (徹底排除 type 參數衝突)
 # -----------------------------------------------------------------------------
 creds_dict = {}
+
+# 1. 優先提取 Secrets 設定
 if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
     creds_dict = dict(st.secrets["connections"]["gsheets"])
 elif "gcp_service_account" in st.secrets:
     creds_dict = dict(st.secrets["gcp_service_account"])
+elif "private_key" in st.secrets:
+    creds_dict = dict(st.secrets)
 
-# 剔除字典內的 type 欄位，避免參數重複
+# 2. 關鍵處置：強制刪除字典中的 'type' 欄位，防止與 type=GSheetsConnection 衝突
 creds_dict.pop("type", None)
 
-# 修復私鑰中 \n 換行字元問題
+# 3. 修復私鑰 (private_key) 換行問題
 if "private_key" in creds_dict:
     creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
-# 自動補上預設 Google 試算表網址
-if "spreadsheet" not in creds_dict:
+# 4. 確保試算表網址正確填入
+if "spreadsheet" not in creds_dict or not creds_dict["spreadsheet"]:
     creds_dict["spreadsheet"] = "https://docs.google.com/spreadsheets/d/1fqR5nvOGTOnKljryhMwfbAUaVZo5L11Jtsm823Hf8hU/edit"
 
 try:
-    # 使用自訂連線名稱 'medication_gsheets'，防止 Streamlit 自動重複讀取 Secrets
-    conn = st.connection('medication_gsheets', type=GSheetsConnection, **creds_dict)
+    # 5. 使用獨立名稱 'medication_app_gsheets' 建立連線
+    conn = st.connection('medication_app_gsheets', type=GSheetsConnection, **creds_dict)
 except Exception as e:
     st.error(f'❌ 無法建立 Google 連線：{e}')
     st.stop()
+
+
+def load_data():
+    try:
+        df = conn.read(worksheet='庫存', ttl='5m')
+        if '目前庫存' in df.columns:
+            df['目前庫存'] = pd.to_numeric(df['目前庫存'], errors='coerce').fillna(0).astype(int)
+        return df
+    except Exception as e:
+        st.error(
+            f"❌ 讀取『庫存』試算表失敗，請確認 Google Sheet 中有『庫存』工作表。細節：{e}"
+        )
+        st.stop()
+
+
 # 效期自動預警與警告通知
 def check_expiration_warnings(df):
     if df is None or df.empty:
@@ -962,7 +981,6 @@ elif menu == '📊 用藥月報與學期統計表':
         bottom=Side(style='thin', color='D9D9D9'),
     )
 
-    # 格式化標頭
     for col_idx, _ in enumerate(excel_headers, start=1):
         cell = ws.cell(row=2, column=col_idx)
         cell.alignment = align_center
@@ -980,7 +998,6 @@ elif menu == '📊 用藥月報與學期統計表':
             cell.fill = fill_orange
             cell.font = font_white_bold
 
-    # 填入報表資料列
     for r_idx, r_data in enumerate(report_rows, start=3):
         row_values = [
             r_data['藥品名稱\n(商品名/中文)'],
@@ -1007,13 +1024,11 @@ elif menu == '📊 用藥月報與學期統計表':
             cell.font = font_default
             cell.alignment = align_left if c_idx == 1 else align_center
 
-    # 自動調整欄寬
     for col in ws.columns:
         max_len = max(len(str(cell.value or '')) for cell in col)
         col_letter = get_column_letter(col[0].column)
         ws.column_dimensions[col_letter].width = max(max_len + 3, 10)
 
-    # 下載 Excel 按鈕
     buffer = io.BytesIO()
     wb.save(buffer)
     buffer.seek(0)
