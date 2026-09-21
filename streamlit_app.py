@@ -91,28 +91,33 @@ if 'inbound_stage' not in st.session_state:
     st.session_state.inbound_stage = 'input'
 
 # -----------------------------------------------------------------------------
-# 2. 資料庫連線與資料讀取輔助函式 (徹底排除 type 參數衝突)
+# 2. 資料庫連線與資料讀取輔助函式 (確保 creds_dict 變數完全初始化)
 # -----------------------------------------------------------------------------
-try:
-    conn = st.connection('gsheets', type=GSheetsConnection)
-except Exception as e:
-    st.error(f'❌ 無法建立 Google 連線：{e}')
-    st.stop()
+# 1. 優先初始化變數，避免 NameError
+creds_dict = {}
 
-# 2. 關鍵處置：強制刪除字典中的 'type' 欄位，防止與 type=GSheetsConnection 衝突
+# 2. 安全讀取 Secrets 設定
+if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+    creds_dict = dict(st.secrets["connections"]["gsheets"])
+elif "gcp_service_account" in st.secrets:
+    creds_dict = dict(st.secrets["gcp_service_account"])
+elif "private_key" in st.secrets:
+    creds_dict = dict(st.secrets)
+
+# 3. 移除可能造成參數撞名的 type 欄位
 creds_dict.pop("type", None)
 
-# 3. 修復私鑰 (private_key) 換行問題
-if "private_key" in creds_dict:
+# 4. 自動修正私鑰換行符號
+if "private_key" in creds_dict and isinstance(creds_dict["private_key"], str):
     creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
-# 4. 確保試算表網址正確填入
+# 5. 自動設定預設 Google 試算表網址
 if "spreadsheet" not in creds_dict or not creds_dict["spreadsheet"]:
     creds_dict["spreadsheet"] = "https://docs.google.com/spreadsheets/d/1fqR5nvOGTOnKljryhMwfbAUaVZo5L11Jtsm823Hf8hU/edit"
 
 try:
-    # 5. 使用獨立名稱 'medication_app_gsheets' 建立連線
-    conn = st.connection('medication_app_gsheets', type=GSheetsConnection, **creds_dict)
+    # 6. 建立獨立連線
+    conn = st.connection('medication_app', type=GSheetsConnection, **creds_dict)
 except Exception as e:
     st.error(f'❌ 無法建立 Google 連線：{e}')
     st.stop()
