@@ -39,12 +39,22 @@ def init_gspread():
 
 def get_spreadsheet():
     gc = init_gspread()
-    sheet_name_or_id = st.secrets.get("spreadsheet_name", "藥品管理系統")
+    # 取得 Secrets 中的名稱或 ID
+    target = st.secrets.get("spreadsheet_name", "")
+    
+    # 優先嘗試當作「試算表 ID」開啟 (open_by_key)
     try:
-        return gc.open(sheet_name_or_id)
+        return gc.open_by_key(target)
     except Exception:
-        return gc.open_by_key(sheet_name_or_id)
-
+        pass
+        
+    # 若失敗，嘗試當作「試算表檔名」開啟 (open)
+    try:
+        return gc.open(target)
+    except Exception:
+        st.error(f"❌ 無法讀取試算表（設定值：'{target}'）。\n\n請確認：\n1. 試算表已「共用」給 client_email\n2. Google Drive API 已在 GCP 啟用")
+        st.stop()
+        
 # 載入庫存資料並清洗
 def load_inventory_data():
     sh = get_spreadsheet()
