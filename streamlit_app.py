@@ -91,12 +91,10 @@ if 'inbound_stage' not in st.session_state:
     st.session_state.inbound_stage = 'input'
 
 # -----------------------------------------------------------------------------
-# 2. 資料庫連線與資料讀取輔助函式 (確保 creds_dict 變數完全初始化)
+# 2. 資料庫連線與資料讀取輔助函式 (修正連線參數分離)
 # -----------------------------------------------------------------------------
-# 1. 優先初始化變數，避免 NameError
 creds_dict = {}
 
-# 2. 安全讀取 Secrets 設定
 if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
     creds_dict = dict(st.secrets["connections"]["gsheets"])
 elif "gcp_service_account" in st.secrets:
@@ -104,19 +102,18 @@ elif "gcp_service_account" in st.secrets:
 elif "private_key" in st.secrets:
     creds_dict = dict(st.secrets)
 
-# 3. 移除可能造成參數撞名的 type 欄位
+# 1. 剔除連線初始化不支援的參數
 creds_dict.pop("type", None)
+SPREADSHEET_URL = creds_dict.pop(
+    "spreadsheet",
+    "https://docs.google.com/spreadsheets/d/1fqR5nvOGTOnKljryhMwfbAUaVZo5L11Jtsm823Hf8hU/edit",
+)
 
-# 4. 自動修正私鑰換行符號
+# 2. 自動修正私鑰換行
 if "private_key" in creds_dict and isinstance(creds_dict["private_key"], str):
     creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
-# 5. 自動設定預設 Google 試算表網址
-if "spreadsheet" not in creds_dict or not creds_dict["spreadsheet"]:
-    creds_dict["spreadsheet"] = "https://docs.google.com/spreadsheets/d/1fqR5nvOGTOnKljryhMwfbAUaVZo5L11Jtsm823Hf8hU/edit"
-
 try:
-    # 6. 建立獨立連線
     conn = st.connection('medication_app', type=GSheetsConnection, **creds_dict)
 except Exception as e:
     st.error(f'❌ 無法建立 Google 連線：{e}')
@@ -125,7 +122,7 @@ except Exception as e:
 
 def load_data():
     try:
-        df = conn.read(worksheet='庫存', ttl='5m')
+        df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet='庫存', ttl='5m')
         if '目前庫存' in df.columns:
             df['目前庫存'] = pd.to_numeric(df['目前庫存'], errors='coerce').fillna(0).astype(int)
         return df
@@ -218,12 +215,16 @@ def append_to_log_sheet(connection, possible_sheet_names, new_logs_df):
     for sheet_name in possible_sheet_names:
         try:
             try:
-                df_existing = connection.read(worksheet=sheet_name, ttl='5m')
+                df_existing = connection.read(
+                    spreadsheet=SPREADSHEET_URL, worksheet=sheet_name, ttl='5m'
+                )
                 df_updated = pd.concat([df_existing, new_logs_df], ignore_index=True)
             except Exception:
                 df_updated = new_logs_df
 
-            connection.update(worksheet=sheet_name, data=df_updated)
+            connection.update(
+                spreadsheet=SPREADSHEET_URL, worksheet=sheet_name, data=df_updated
+            )
             return True, sheet_name
         except Exception:
             continue
@@ -233,7 +234,9 @@ def append_to_log_sheet(connection, possible_sheet_names, new_logs_df):
 def get_log_sheet_data(connection, possible_sheet_names):
     for sheet_name in possible_sheet_names:
         try:
-            df = connection.read(worksheet=sheet_name, ttl='5m')
+            df = connection.read(
+                spreadsheet=SPREADSHEET_URL, worksheet=sheet_name, ttl='5m'
+            )
             return df, sheet_name
         except Exception:
             continue
@@ -374,7 +377,7 @@ if menu == '💊 多項藥品領用登記':
                     df_save = df_inventory.drop(
                         columns=['display_name'], errors='ignore'
                     )
-                    conn.update(worksheet='庫存', data=df_save)
+                    conn.update(spreadsheet=SPREADSHEET_URL, worksheet='庫存', data=df_save)
 
                     df_logs_new = pd.DataFrame(new_logs)
                     success, target_sheet = append_to_log_sheet(
@@ -524,7 +527,7 @@ elif menu == '📥 藥品進貨/建檔登記':
                         df_save = df_inventory.drop(
                             columns=['display_name'], errors='ignore'
                         )
-                        conn.update(worksheet='庫存', data=df_save)
+                        conn.update(spreadsheet=SPREADSHEET_URL, worksheet='庫存', data=df_save)
 
                         df_inbound_new = pd.DataFrame([purchase_log])
                         append_to_log_sheet(
@@ -616,7 +619,7 @@ elif menu == '📥 藥品進貨/建檔登記':
                     )
 
                     try:
-                        conn.update(worksheet='庫存', data=df_save)
+                        conn.update(spreadsheet=SPREADSHEET_URL, worksheet='庫存', data=df_save)
                         st.cache_data.clear()
                         st.success(
                             f"🎉 成功建立新藥品『{new_eng_name} ({new_cht_name})』！已正確對齊雲端欄位並同步更新。"
@@ -705,8 +708,8 @@ elif menu == '🛠️ 紀錄修改與庫存微調':
                         df_save_inv = df_inventory.drop(
                             columns=['display_name'], errors='ignore'
                         )
-                        conn.update(worksheet='庫存', data=df_save_inv)
-                        conn.update(worksheet=sheet_used, data=df_logs)
+                        conn.update(spreadsheet=SPREADSHEET_URL, worksheet='庫存', data=df_save_inv)
+                        conn.update(spreadsheet=SPREADSHEET_URL, worksheet=sheet_used, data=df_logs)
 
                         st.cache_data.clear()
                         st.success(
@@ -729,8 +732,8 @@ elif menu == '🛠️ 紀錄修改與庫存微調':
                         df_save_inv = df_inventory.drop(
                             columns=['display_name'], errors='ignore'
                         )
-                        conn.update(worksheet='庫存', data=df_save_inv)
-                        conn.update(worksheet=sheet_used, data=df_logs)
+                        conn.update(spreadsheet=SPREADSHEET_URL, worksheet='庫存', data=df_save_inv)
+                        conn.update(spreadsheet=SPREADSHEET_URL, worksheet=sheet_used, data=df_logs)
 
                         st.cache_data.clear()
                         st.success(
@@ -775,7 +778,7 @@ elif menu == '🛠️ 紀錄修改與庫存微調':
             if st.button('✅ 強制覆蓋寫入正確庫存'):
                 df_inventory.loc[c_idx, '目前庫存'] = correct_stock
                 df_save = df_inventory.drop(columns=['display_name'], errors='ignore')
-                conn.update(worksheet='庫存', data=df_save)
+                conn.update(spreadsheet=SPREADSHEET_URL, worksheet='庫存', data=df_save)
 
                 st.cache_data.clear()
                 st.success(f'🎉 `{selected_cal_med}` 庫存已修正為 `{correct_stock}`！')
