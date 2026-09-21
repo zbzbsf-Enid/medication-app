@@ -91,48 +91,35 @@ if 'inbound_stage' not in st.session_state:
     st.session_state.inbound_stage = 'input'
 
 # -----------------------------------------------------------------------------
-# 2. 資料庫連線與資料讀取輔助函式 (修正連線參數分離)
+# 2. 資料庫連線與資料讀取輔助函式
 # -----------------------------------------------------------------------------
 creds_dict = {}
 
 if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-    creds_dict = dict(st.secrets["connections"]["gsheets"])
+    conn_secrets = dict(st.secrets["connections"]["gsheets"])
+    if "service_account" in conn_secrets:
+        creds_dict = dict(conn_secrets["service_account"])
+    else:
+        creds_dict = conn_secrets
 elif "gcp_service_account" in st.secrets:
     creds_dict = dict(st.secrets["gcp_service_account"])
-elif "private_key" in st.secrets:
-    creds_dict = dict(st.secrets)
 
-# 1. 剔除連線初始化不支援的參數
-creds_dict.pop("type", None)
-SPREADSHEET_URL = creds_dict.pop(
-    "spreadsheet",
-    "https://docs.google.com/spreadsheets/d/1fqR5nvOGTOnKljryhMwfbAUaVZo5L11Jtsm823Hf8hU/edit",
-)
-
-# 2. 自動修正私鑰換行
+# 自動修復私鑰換行問題
 if "private_key" in creds_dict and isinstance(creds_dict["private_key"], str):
     creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
+SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1fqR5nvOGTOnKljryhMwfbAUaVZo5L11Jtsm823Hf8hU/edit"
+
 try:
-    conn = st.connection('medication_app', type=GSheetsConnection, **creds_dict)
+    # 💡 關鍵：將憑證透過 service_account= 傳入，避免 direct kwargs 參數撞名
+    conn = st.connection(
+        'medication_app',
+        type=GSheetsConnection,
+        service_account=creds_dict
+    )
 except Exception as e:
     st.error(f'❌ 無法建立 Google 連線：{e}')
     st.stop()
-
-
-def load_data():
-    try:
-        df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet='庫存', ttl='5m')
-        if '目前庫存' in df.columns:
-            df['目前庫存'] = pd.to_numeric(df['目前庫存'], errors='coerce').fillna(0).astype(int)
-        return df
-    except Exception as e:
-        st.error(
-            f"❌ 讀取『庫存』試算表失敗，請確認 Google Sheet 中有『庫存』工作表。細節：{e}"
-        )
-        st.stop()
-
-
 # 效期自動預警與警告通知
 def check_expiration_warnings(df):
     if df is None or df.empty:
