@@ -93,15 +93,11 @@ if 'inbound_stage' not in st.session_state:
 # -----------------------------------------------------------------------------
 # 2. 資料庫連線與資料讀取輔助函式 (徹底排除 type 參數衝突)
 # -----------------------------------------------------------------------------
-creds_dict = {}
-
-# 1. 優先提取 Secrets 設定
-if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-    creds_dict = dict(st.secrets["connections"]["gsheets"])
-elif "gcp_service_account" in st.secrets:
-    creds_dict = dict(st.secrets["gcp_service_account"])
-elif "private_key" in st.secrets:
-    creds_dict = dict(st.secrets)
+try:
+    conn = st.connection('gsheets', type=GSheetsConnection)
+except Exception as e:
+    st.error(f'❌ 無法建立 Google 連線：{e}')
+    st.stop()
 
 # 2. 關鍵處置：強制刪除字典中的 'type' 欄位，防止與 type=GSheetsConnection 衝突
 creds_dict.pop("type", None)
