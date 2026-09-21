@@ -142,7 +142,6 @@ def check_expiration_warnings(df):
             except Exception:
                 continue
 
-    # 🚨 顯示已過期嚴重警告提示區塊
     if already_expired:
         st.error("🚨 **【嚴重警告】系統檢測到有藥品已過期！提醒人員儘速處置與辦理報銷！**")
         with st.expander("🚨 查看已過期藥品明細 (請儘速處置與報銷)", expanded=True):
@@ -152,7 +151,6 @@ def check_expiration_warnings(df):
                     f"（已過期 **{item['days']}** 天） ｜ 當前庫存：`{item['stock']}`"
                 )
 
-    # ⚠️ 顯示 1 個月內即將到期預警區塊
     if expiring_soon:
         with st.expander("⚠️ 【到期預警】以下藥品將於 1 個月內到期！請留意使用狀況與準備報銷", expanded=True):
             for item in expiring_soon:
@@ -195,7 +193,7 @@ menu = st.sidebar.radio(
     "請選擇功能頁面", 
     [
         "💊 多項藥品領用登記", 
-        "📥 藥品進貨/補貨登記", 
+        "📥 藥品進貨/建檔登記", 
         "🛠️ 紀錄修改與庫存微調", 
         "📦 當前庫存總覽", 
         "📊 用藥月報與學期統計表"
@@ -325,98 +323,155 @@ if menu == "💊 多項藥品領用登記":
                 st.rerun()
 
 # -----------------------------------------------------------------------------
-# 頁面 2：新增藥品進貨/補貨登記
+# 頁面 2：藥品進貨/建檔登記 (支援現有補貨 & 全新藥品品項建立)
 # -----------------------------------------------------------------------------
-elif menu == "📥 藥品進貨/補貨登記":
-    st.header("📥 藥品購入與進貨登記")
-    df_inventory['display_name'] = (
-        df_inventory['藥品名稱(英文)'].fillna('') + " (" + 
-        df_inventory['中文名稱'].fillna('') + ")"
-    )
-    med_list = df_inventory['display_name'].tolist()
+elif menu == "📥 藥品進貨/建檔登記":
+    st.header("📥 藥品進貨與建檔管理")
+    
+    tab_inbound, tab_create = st.tabs(["📦 現有藥品補貨/進貨", "➕ 建立全新藥品品項"])
 
-    if st.session_state.inbound_stage == 'input':
-        selected_med = st.selectbox("請選擇進貨藥品：", options=med_list)
+    # 頁籤 1: 現有藥品補貨
+    with tab_inbound:
+        df_inventory['display_name'] = (
+            df_inventory['藥品名稱(英文)'].fillna('') + " (" + 
+            df_inventory['中文名稱'].fillna('') + ")"
+        )
+        med_list = df_inventory['display_name'].tolist()
 
-        if selected_med:
-            row_info = df_inventory[df_inventory['display_name'] == selected_med].iloc[0]
-            st.info(f"📌 當前庫存：`{row_info['目前庫存']}` | 目前批號：`{row_info['批號']}` | 目前有效期限：`{row_info['有效期限']}`")
+        if st.session_state.inbound_stage == 'input':
+            selected_med = st.selectbox("請選擇補貨藥品：", options=med_list, key="select_existing_med")
 
-            col_p1, col_p2 = st.columns(2)
-            with col_p1:
-                inbound_date = st.date_input("📅 進貨日期：", value=datetime.now().date())
-                purchase_qty = st.number_input("📦 購入數量：", min_value=1, value=100, step=1)
-            with col_p2:
-                new_batch = st.text_input("🏷️ 新藥品批號：", value=str(row_info['批號']) if pd.notna(row_info['批號']) else "")
-                new_expiry = st.date_input("⏳ 新有效期限：", value=datetime.now().date())
+            if selected_med:
+                row_info = df_inventory[df_inventory['display_name'] == selected_med].iloc[0]
+                st.info(f"📌 當前庫存：`{row_info['目前庫存']}` | 目前批號：`{row_info['批號']}` | 目前有效期限：`{row_info['有效期限']}`")
 
-            vendor_remark = st.text_input("🏢 廠商/採購備註：", placeholder="例如：衛福部撥發 / 某某藥局採購")
+                col_p1, col_p2 = st.columns(2)
+                with col_p1:
+                    inbound_date = st.date_input("📅 進貨日期：", value=datetime.now().date(), key="inbound_date")
+                    purchase_qty = st.number_input("📦 購入數量：", min_value=1, value=100, step=1, key="purchase_qty")
+                with col_p2:
+                    new_batch = st.text_input("🏷️ 新藥品批號：", value=str(row_info['批號']) if pd.notna(row_info['批號']) else "", key="new_batch")
+                    new_expiry = st.date_input("⏳ 新有效期限：", value=datetime.now().date(), key="new_expiry")
 
-            if st.button("🔍 預覽進貨明細", type="primary"):
-                st.session_state.inbound_data = {
-                    "selected_med": selected_med,
-                    "inbound_date": inbound_date,
-                    "purchase_qty": purchase_qty,
-                    "new_batch": new_batch,
-                    "new_expiry": new_expiry,
-                    "vendor_remark": vendor_remark,
-                    "old_qty": int(row_info['目前庫存'])
-                }
-                st.session_state.inbound_stage = 'confirm'
-                st.rerun()
+                vendor_remark = st.text_input("🏢 廠商/採購備註：", placeholder="例如：衛福部撥發 / 某某藥局採購", key="vendor_remark")
 
-    elif st.session_state.inbound_stage == 'confirm':
-        i_data = st.session_state.inbound_data
-        st.markdown("<div class='confirm-card'>", unsafe_allow_html=True)
-        st.warning("⚠️ **請再次核對進貨資訊：**")
-        st.write(f"💊 **進貨藥品：** `{i_data['selected_med']}`")
-        st.write(f"📅 **進貨日期：** `{i_data['inbound_date']}`")
-        st.write(f"📦 **進貨數量：** `{i_data['purchase_qty']}` （原有庫存：{i_data['old_qty']} ➔ **進貨後總庫存：{i_data['old_qty'] + i_data['purchase_qty']}**）")
-        st.write(f"🏷️ **新批號：** `{i_data['new_batch']}` | ⏳ **新有效期限：** `{i_data['new_expiry']}`")
-        st.write(f"📝 **採購備註：** `{i_data['vendor_remark'] if i_data['vendor_remark'] else '無'}`")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        col_i1, col_i2 = st.columns([1, 1])
-        with col_i1:
-            if st.button("✅ 確認進貨並同步更新雲端", type="primary"):
-                idx = df_inventory[df_inventory['display_name'] == i_data['selected_med']].index[0]
-                new_qty = i_data['old_qty'] + int(i_data['purchase_qty'])
-                expiry_str = i_data['new_expiry'].strftime("%Y-%m-%d")
-                inbound_time_str = f"{i_data['inbound_date'].strftime('%Y-%m-%d')} {datetime.now().strftime('%H:%M:%S')}"
-
-                df_inventory.loc[idx, '目前庫存'] = new_qty
-                df_inventory.loc[idx, '批號'] = i_data['new_batch']
-                df_inventory.loc[idx, '有效期限'] = expiry_str
-
-                purchase_log = {
-                    "進貨時間": str(inbound_time_str),
-                    "藥品名稱": str(df_inventory.loc[idx, '藥品名稱(英文)']),
-                    "中文名稱": str(df_inventory.loc[idx, '中文名稱']),
-                    "購入數量": int(i_data['purchase_qty']),
-                    "新批號": str(i_data['new_batch']),
-                    "有效期限": str(expiry_str),
-                    "更新後總庫存": int(new_qty),
-                    "備註": str(i_data['vendor_remark'])
-                }
-
-                try:
-                    df_save = df_inventory.drop(columns=['display_name'], errors='ignore')
-                    conn.update(worksheet="庫存", data=df_save)
-                    
-                    df_inbound_new = pd.DataFrame([purchase_log])
-                    append_to_log_sheet(conn, ["進貨紀錄", "進貨記錄"], df_inbound_new)
-
-                    st.cache_data.clear()
-                    st.session_state.inbound_stage = 'input'
-                    st.success(f"🎉 進貨完成！`{i_data['selected_med']}` 庫存已由 {i_data['old_qty']} 增加至 {new_qty}。")
+                if st.button("🔍 預覽進貨明細", type="primary"):
+                    st.session_state.inbound_data = {
+                        "selected_med": selected_med,
+                        "inbound_date": inbound_date,
+                        "purchase_qty": purchase_qty,
+                        "new_batch": new_batch,
+                        "new_expiry": new_expiry,
+                        "vendor_remark": vendor_remark,
+                        "old_qty": int(row_info['目前庫存'])
+                    }
+                    st.session_state.inbound_stage = 'confirm'
                     st.rerun()
-                except Exception as e:
-                    st.error(f"❌ 庫存更新失敗：{e}")
 
-        with col_i2:
-            if st.button("✏️ 返回修改進貨內容"):
-                st.session_state.inbound_stage = 'input'
-                st.rerun()
+        elif st.session_state.inbound_stage == 'confirm':
+            i_data = st.session_state.inbound_data
+            st.markdown("<div class='confirm-card'>", unsafe_allow_html=True)
+            st.warning("⚠️ **請再次核對進貨資訊：**")
+            st.write(f"💊 **進貨藥品：** `{i_data['selected_med']}`")
+            st.write(f"📅 **進貨日期：** `{i_data['inbound_date']}`")
+            st.write(f"📦 **進貨數量：** `{i_data['purchase_qty']}` （原有庫存：{i_data['old_qty']} ➔ **進貨後總庫存：{i_data['old_qty'] + i_data['purchase_qty']}**）")
+            st.write(f"🏷️ **新批號：** `{i_data['new_batch']}` | ⏳ **新有效期限：** `{i_data['new_expiry']}`")
+            st.write(f"📝 **採購備註：** `{i_data['vendor_remark'] if i_data['vendor_remark'] else '無'}`")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            col_i1, col_i2 = st.columns([1, 1])
+            with col_i1:
+                if st.button("✅ 確認進貨並同步更新雲端", type="primary"):
+                    idx = df_inventory[df_inventory['display_name'] == i_data['selected_med']].index[0]
+                    new_qty = i_data['old_qty'] + int(i_data['purchase_qty'])
+                    expiry_str = i_data['new_expiry'].strftime("%Y-%m-%d")
+                    inbound_time_str = f"{i_data['inbound_date'].strftime('%Y-%m-%d')} {datetime.now().strftime('%H:%M:%S')}"
+
+                    df_inventory.loc[idx, '目前庫存'] = new_qty
+                    df_inventory.loc[idx, '批號'] = i_data['new_batch']
+                    df_inventory.loc[idx, '有效期限'] = expiry_str
+
+                    purchase_log = {
+                        "進貨時間": str(inbound_time_str),
+                        "藥品名稱": str(df_inventory.loc[idx, '藥品名稱(英文)']),
+                        "中文名稱": str(df_inventory.loc[idx, '中文名稱']),
+                        "購入數量": int(i_data['purchase_qty']),
+                        "新批號": str(i_data['new_batch']),
+                        "有效期限": str(expiry_str),
+                        "更新後總庫存": int(new_qty),
+                        "備註": str(i_data['vendor_remark'])
+                    }
+
+                    try:
+                        df_save = df_inventory.drop(columns=['display_name'], errors='ignore')
+                        conn.update(worksheet="庫存", data=df_save)
+                        
+                        df_inbound_new = pd.DataFrame([purchase_log])
+                        append_to_log_sheet(conn, ["進貨紀錄", "進貨記錄"], df_inbound_new)
+
+                        st.cache_data.clear()
+                        st.session_state.inbound_stage = 'input'
+                        st.success(f"🎉 進貨完成！`{i_data['selected_med']}` 庫存已由 {i_data['old_qty']} 增加至 {new_qty}。")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ 庫存更新失敗：{e}")
+
+            with col_i2:
+                if st.button("✏️ 返回修改進貨內容"):
+                    st.session_state.inbound_stage = 'input'
+                    st.rerun()
+
+    # 💡 頁籤 2: 新增全新藥品品項
+    with tab_create:
+        st.subheader("➕ 新增全新藥品至雲端庫存清單")
+        st.caption("用於建立試算表中尚未存在的新藥品資料。")
+
+        col_n1, col_n2 = st.columns(2)
+        with col_n1:
+            new_eng_name = st.text_input("💊 藥品英文名稱/商品名（必填）：", placeholder="例如：Amoxicillin 500mg")
+            new_cht_name = st.text_input("💊 藥品中文名稱：", placeholder="例如：安莫西林膠囊")
+            new_batch_code = st.text_input("🏷️ 批號：", value="DEFAULT")
+        with col_n2:
+            new_init_stock = st.number_input("📦 初期庫存數量：", min_value=0, value=0, step=1)
+            new_exp_date = st.date_input("⏳ 有效期限：", value=datetime.now().date())
+            new_usage = st.text_input("📝 作用/適應症/用途說明：", placeholder="例如：抗生素/感冒發炎用藥")
+
+        if st.button("✨ 建立新藥品並寫入雲端", type="primary"):
+            if not new_eng_name.strip():
+                st.error("❌ 藥品英文名稱為必填欄位！")
+            else:
+                # 檢查是否已存在相同英文名稱
+                existing_match = df_inventory[df_inventory['藥品名稱(英文)'].astype(str).str.strip().str.lower() == new_eng_name.strip().lower()]
+                if not existing_match.empty:
+                    st.warning(f"⚠️ 雲端庫存中已存在名稱類似的藥品『{new_eng_name}』，建議直接使用「現有藥品補貨」功能。")
+                else:
+                    new_drug_row = {
+                        "藥品名稱(英文)": new_eng_name.strip(),
+                        "中文名稱": new_cht_name.strip(),
+                        "批號": new_batch_code.strip(),
+                        "目前庫存": int(new_init_stock),
+                        "有效期限": new_exp_date.strftime("%Y-%m-%d"),
+                        "用途": new_usage.strip(),
+                        "狀態": "OK"
+                    }
+
+                    # 動態比對欄位並加入新資料
+                    df_save = df_inventory.drop(columns=['display_name'], errors='ignore').copy()
+                    
+                    # 確保沒有少掉主要欄位
+                    for key in new_drug_row.keys():
+                        if key not in df_save.columns:
+                            df_save[key] = ""
+
+                    df_save = pd.concat([df_save, pd.DataFrame([new_drug_row])], ignore_index=True)
+
+                    try:
+                        conn.update(worksheet="庫存", data=df_save)
+                        st.cache_data.clear()
+                        st.success(f"🎉 成功建立新藥品『{new_eng_name} ({new_cht_name})』！已同步寫入 Google 試算表。")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ 寫入雲端失敗：{e}")
 
 # -----------------------------------------------------------------------------
 # 頁面 3：紀錄修改與庫存微調
@@ -555,14 +610,12 @@ elif menu == "📊 用藥月報與學期統計表":
     days_list = [1, 2, 3, 4, 7, 8, 9, 10, 11, 14, 15, 16, 17, 18, 21, 22, 23, 24, 25, 28, 29, 30]
     days = [f"{month_num}/{d}" for d in days_list]
 
-    # 計算統計月份對應之公元年/月，供效期比對
     try:
         roc_num = int(selected_year.replace("學年度", "").strip())
         report_year = (roc_num + 1911) if month_num >= 8 else (roc_num + 1911 + 1)
     except Exception:
         report_year = datetime.now().year
     
-    # 讀取並彙整領用紀錄中的「每日領用量」
     df_logs, _ = get_log_sheet_data(conn, ["領用記錄", "領用紀錄"])
     daily_usage_map = {}
 
@@ -615,12 +668,10 @@ elif menu == "📊 用藥月報與學期統計表":
         excel_day_qty_list.append(day_quantities)
         monthly_used_sum = sum(day_quantities)
 
-        # 💡 自動判定該藥品是否於「當前統計月份」或更早前過期，若是則將剩餘數量直接帶入「過期報銷」
         expired_writeoff = 0
         if pd.notna(expiry) and expiry != '' and expiry.lower() != 'nan':
             try:
                 exp_date = pd.to_datetime(expiry).date()
-                # 若有效期限落在該統計月份（或在此之前），扣減當月使用量後的剩餘量自動帶入過期報銷
                 if (exp_date.year == report_year and exp_date.month == month_num) or (exp_date < datetime(report_year, month_num, 1).date()):
                     expired_writeoff = max(0, stock - monthly_used_sum)
             except Exception:
@@ -633,7 +684,7 @@ elif menu == "📊 用藥月報與學期統計表":
             "當月使用\n總量": monthly_used_sum, 
             "當月剩餘量": rem_stock,
             "購入量": 0, 
-            "過期報銷": expired_writeoff, # 💡 當月過期自動匯入報銷欄位
+            "過期報銷": expired_writeoff,
             "公藥使用": 0,
             "實體盤點\n數量": rem_stock, 
             "有效期限": expiry,
@@ -650,7 +701,6 @@ elif menu == "📊 用藥月報與學期統計表":
     st.subheader(f"📄 {selected_year} 上學期用藥月報表 ({selected_month}) 預覽")
     st.dataframe(df_report, use_container_width=True, hide_index=True)
 
-    # 產生並美化 Excel 檔
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = f"115年{selected_month}用藥月報表"
@@ -723,9 +773,9 @@ elif menu == "📊 用藥月報與學期統計表":
             row["藥品名稱\n(商品名/中文)"], row["115年8月\n剩餘量"],
             *day_qtys,
             f"=SUM(C{r_idx}:X{r_idx})",                        # Y: 當月使用總量
-            f"=B{r_idx}+AA{r_idx}-Y{r_idx}-AB{r_idx}-AC{r_idx}", # Z: 當月剩餘量 (扣除過期報銷)
+            f"=B{r_idx}+AA{r_idx}-Y{r_idx}-AB{r_idx}-AC{r_idx}", # Z: 當月剩餘量
             0,                                                 # AA: 購入量
-            exp_qty,                                           # AB: 過期報銷 (💡 自動連動寫入)
+            exp_qty,                                           # AB: 過期報銷
             0,                                                 # AC: 公藥使用
             f"=Z{r_idx}",                                      # AD: 實體盤點數量
             row["有效期限"],                                    # AE: 有效期限
@@ -740,16 +790,15 @@ elif menu == "📊 用藥月報與學期統計表":
             cell.alignment = align_center if c_idx > 1 else align_left
             cell.font = font_default
 
-            if c_idx in [2, 28, 30]: # B (上月剩餘量), AB (過期報銷), AD (實體盤點數量)
+            if c_idx in [2, 28, 30]:
                 cell.font = font_red
-            elif c_idx in [25, 26]: # Y (當月使用總量), Z (當月剩餘量)
+            elif c_idx in [25, 26]:
                 cell.fill = fill_data_yellow
                 cell.font = font_navy
-            elif c_idx == 37: # AK (全學期使用總量)
+            elif c_idx == 37:
                 cell.fill = fill_data_orange
                 cell.font = font_orange
 
-    # 設定各欄位寬度
     ws.column_dimensions['A'].width = 30
     ws.column_dimensions['B'].width = 12
     for c in range(3, 25):
