@@ -99,6 +99,9 @@ if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
 elif "gcp_service_account" in st.secrets:
     gs_secrets = dict(st.secrets["gcp_service_account"])
 
+# 💡 關鍵修正：剔除字典內的 type 欄位，避免與 type=GSheetsConnection 參數重複衝突
+gs_secrets.pop("type", None)
+
 # 修復私鑰中 \n 換行字元問題
 if "private_key" in gs_secrets:
     gs_secrets["private_key"] = gs_secrets["private_key"].replace("\\n", "\n")
@@ -112,19 +115,6 @@ try:
 except Exception as e:
     st.error(f'❌ 無法建立 Google 連線：{e}')
     st.stop()
-
-
-def load_data():
-    try:
-        df = conn.read(worksheet='庫存', ttl='5m')
-        if '目前庫存' in df.columns:
-            df['目前庫存'] = pd.to_numeric(df['目前庫存'], errors='coerce').fillna(0).astype(int)
-        return df
-    except Exception as e:
-        st.error(
-            f"❌ 讀取『庫存』試算表失敗，請確認 Google Sheet 中有『庫存』工作表。細節：{e}"
-        )
-        st.stop()
 
 
 # 效期自動預警與警告通知
