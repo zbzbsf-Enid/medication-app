@@ -15,24 +15,25 @@ st.set_page_config(
 st.title("💊 國立臺北大學衛保組 藥品管理系統")
 
 # -----------------------------------------------------------------------------
-# 1. 雲端 Google Sheets 連線與智慧相容讀取 (保護歷史紀錄)
+# 1. 雲端 Google Sheets 連線與快取優化 (防範 429 API 超限錯誤)
 # -----------------------------------------------------------------------------
-@st.cache_resource(ttl=60)
 def get_connection():
     return st.connection("gsheets", type=GSheetsConnection)
 
 conn = get_connection()
 
+# 💡 使用 @st.cache_data 快取 60 秒，避免頻繁請求 Google API
+@st.cache_data(ttl=60, show_spinner="讀取雲端資料中...")
 def load_data():
     try:
-        # 1. 讀取『庫存』工作表
-        df_inventory = conn.read(worksheet="庫存", ttl=0)
+        # 1. 讀取『庫存』工作表 (開啟快取 ttl=60)
+        df_inventory = conn.read(worksheet="庫存", ttl=60)
         
         # 2. 嘗試讀取各種可能名稱的『領用紀錄』工作表
         df_logs = None
         for log_sheet_name in ["領用紀錄", "用藥紀錄", "紀錄", "Logs"]:
             try:
-                df_logs = conn.read(worksheet=log_sheet_name, ttl=0)
+                df_logs = conn.read(worksheet=log_sheet_name, ttl=60)
                 if df_logs is not None and not df_logs.empty:
                     break
             except Exception:
@@ -155,6 +156,7 @@ def deduct_inventory_fifo(inventory_df, drug_name, req_qty, log_date, note=""):
 st.sidebar.title("📌 功能選單")
 
 if st.sidebar.button("🔄 手動刷新雲端資料"):
+    st.cache_data.clear()
     st.cache_resource.clear()
     st.rerun()
 
@@ -226,13 +228,13 @@ if menu == "📋 多項藥品領用登記":
                     conn.update(worksheet="領用紀錄", data=logs_df_new)
 
                     st.success("✅ 庫存更新成功！已按效期順序扣除舊庫存並同步至雲端。")
-                    st.cache_resource.clear()
+                    st.cache_data.clear()
                     st.rerun()
                 except Exception as e:
                     st.error(f"❌ 寫入雲端失敗：{e}")
 
 # -----------------------------------------------------------------------------
-# 頁面 2：藥品進貨/建檔登記 (新增進貨/新藥品)
+# 頁面 2：藥品進貨/建檔登記
 # -----------------------------------------------------------------------------
 elif menu == "🏥 藥品進貨/建檔登記":
     st.header("🏥 藥品進貨與建檔登記")
@@ -256,7 +258,6 @@ elif menu == "🏥 藥品進貨/建檔登記":
                 st.warning("請填寫批號！")
             else:
                 updated_inv = df_inventory.copy()
-                # 檢查是否已有相同藥名與批號
                 mask = (updated_inv['藥品名稱'] == selected_drug) & (updated_inv['批號'].astype(str) == str(batch_no))
                 if mask.any():
                     updated_inv.loc[mask, '現有庫存'] += add_qty
@@ -272,7 +273,7 @@ elif menu == "🏥 藥品進貨/建檔登記":
                 try:
                     conn.update(worksheet="庫存", data=updated_inv)
                     st.success(f"✅ 已成功為 {selected_drug} 新增庫存 {add_qty} 顆！")
-                    st.cache_resource.clear()
+                    st.cache_data.clear()
                     st.rerun()
                 except Exception as e:
                     st.error(f"❌ 寫入失敗：{e}")
@@ -301,7 +302,7 @@ elif menu == "🏥 藥品進貨/建檔登記":
                 try:
                     conn.update(worksheet="庫存", data=updated_inv)
                     st.success(f"✅ 已建立新藥品 {new_drug_name}！")
-                    st.cache_resource.clear()
+                    st.cache_data.clear()
                     st.rerun()
                 except Exception as e:
                     st.error(f"❌ 寫入失敗：{e}")
@@ -319,7 +320,7 @@ elif menu == "🛠️ 紀錄修改與庫存微調":
         try:
             conn.update(worksheet="庫存", data=edited_inv)
             st.success("✅ 庫存資料微調成功並同步至 Google Sheet！")
-            st.cache_resource.clear()
+            st.cache_data.clear()
             st.rerun()
         except Exception as e:
             st.error(f"❌ 儲存失敗：{e}")
@@ -344,7 +345,6 @@ elif menu == "🗓️ 用藥月報表與學期統計":
         df_logs_calc['日期_str'] = pd.to_datetime(df_logs_calc['日期'], errors='coerce').dt.strftime('%Y-%m-%d')
         df_logs_calc['領用數量'] = pd.to_numeric(df_logs_calc['領用數量'], errors='coerce').fillna(0)
 
-        # 基礎報表
         report_df = df_inventory[['藥品名稱', '批號', '有效日期', '現有庫存']].copy()
         dates = sorted(df_logs_calc['日期_str'].dropna().unique().tolist())
 
@@ -355,7 +355,6 @@ elif menu == "🗓️ 用藥月報表與學期統計":
                 drug = row['藥品名稱']
                 batch = str(row['批號']).strip()
 
-                # 當日該藥名的 Log 集合
                 sub_logs = df_logs_calc[
                     (df_logs_calc['藥品名稱'] == drug) & 
                     (df_logs_calc['日期_str'] == d)
@@ -364,17 +363,14 @@ elif menu == "🗓️ 用藥月報表與學期統計":
                 if sub_logs.empty:
                     qty = 0
                 else:
-                    # 檢查 Log 中是否有精準包含批號的紀錄
                     batch_matched = sub_logs[sub_logs['批號'].astype(str).str.strip() == batch]
                     if not batch_matched.empty:
                         qty = batch_matched['領用數量'].sum()
                     else:
-                        # 舊紀錄防護：若 Log 中完全沒有記錄批號(空值)，則顯示在該藥品的第一個批號上
                         unbatched = sub_logs[
                             (sub_logs['批號'].astype(str).str.strip() == "") | 
                             (sub_logs['批號'].isna())
                         ]
-                        # 找到庫存表裡該藥品的第一列 index，避免重複歸入
                         first_idx_of_drug = report_df[report_df['藥品名稱'] == drug].index[0]
                         if row.name == first_idx_of_drug:
                             qty = unbatched['領用數量'].sum()
