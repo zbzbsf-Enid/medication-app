@@ -311,7 +311,7 @@ if "claim_cart" not in st.session_state:
 # 4. 主頁面內容控制
 # ---------------------------------------------------------
 
-# --- 頁面 1: 藥品領用登記 (升級為多選與個別輸入數量) ---
+# --- 頁面 1: 藥品領用登記 (修正同名不同批號 Duplicate Key 問題) ---
 if page == "📋 藥品領用登記":
     st.title("📋 藥品領用登記")
     inventory_df = load_sheet_data("庫存", INV_COLS)
@@ -366,34 +366,36 @@ if page == "📋 藥品領用登記":
             input_quantities = {}
             
             # 動態渲染所選藥品的數量輸入欄位
-            for opt_str in selected_med_strs:
+            for idx, opt_str in enumerate(selected_med_strs):
                 info = med_mapping[opt_str]
                 disp_name = f"{info['m_name']} ({info['z_name']})" if info['z_name'] else info['m_name']
+                batch_disp = f" [批號: {info['batch_no']}]" if info['batch_no'] else ""
                 
                 col_m1, col_m2, col_m3 = st.columns([3, 1, 1])
                 
                 with col_m1:
                     if info['status'] == "EXPIRED":
-                        st.error(f"❌ **{disp_name}** [已過期 ({info['exp_d']}) - 禁止領用]")
+                        st.error(f"❌ **{disp_name}**{batch_disp} [已過期 ({info['exp_d']}) - 禁止領用]")
                     elif info['status'] == "WARNING":
-                        st.warning(f"⚠️ **{disp_name}** [快到期 ({info['exp_d']})]")
+                        st.warning(f"⚠️ **{disp_name}**{batch_disp} [快到期 ({info['exp_d']})]")
                     else:
-                        st.write(f"💊 **{disp_name}**")
+                        st.write(f"💊 **{disp_name}**{batch_disp}")
                 
                 with col_m2:
                     st.write(f"目前庫存：**{info['stock']}**")
                     
                 with col_m3:
                     if info['status'] != "EXPIRED":
+                        # ✅ 使用 idx + opt_str 確保 key 的唯一性（避免同名不同批號時出現 Duplicate Key 錯誤）
                         q = st.number_input(
                             "數量", 
                             min_value=1, 
                             max_value=max(1, info['stock']), 
                             value=1, 
                             step=1, 
-                            key=f"qty_{info['m_name']}"
+                            key=f"qty_{idx}_{opt_str}"
                         )
-                        input_quantities[info['m_name']] = q
+                        input_quantities[opt_str] = q
                     else:
                         st.write("🚫 不可領用")
             
@@ -403,16 +405,18 @@ if page == "📋 藥品領用登記":
                     info = med_mapping[opt_str]
                     if info['status'] != "EXPIRED":
                         m_name = info['m_name']
-                        q = input_quantities.get(m_name, 1)
+                        batch_no = info['batch_no']
+                        q = input_quantities.get(opt_str, 1)
                         
-                        existing_item = next((item for item in st.session_state.claim_cart if item["藥品名稱"] == m_name), None)
+                        # ✅ 比對「藥品名稱」與「批號」，精準區分不同批號的同款藥品
+                        existing_item = next((item for item in st.session_state.claim_cart if item["藥品名稱"] == m_name and item["批號"] == batch_no), None)
                         if existing_item:
                             existing_item["領用數量"] += q
                         else:
                             st.session_state.claim_cart.append({
                                 "藥品名稱": m_name,
                                 "中文名稱": info['z_name'],
-                                "批號": info['batch_no'],
+                                "批號": batch_no,
                                 "目前庫存": info['stock'],
                                 "領用數量": q
                             })
@@ -483,7 +487,12 @@ if page == "📋 藥品領用登記":
                             "備註": ""
                         })
                         
-                        m_idx = inventory_df[inventory_df["藥品名稱"] == m_name].index
+                        # ✅ 精準比對「藥品名稱」與「批號」扣減對應庫存
+                        if b_no:
+                            m_idx = inventory_df[(inventory_df["藥品名稱"] == m_name) & (inventory_df["批號"] == b_no)].index
+                        else:
+                            m_idx = inventory_df[inventory_df["藥品名稱"] == m_name].index
+                            
                         if not m_idx.empty:
                             idx = m_idx[0]
                             c_qty = pd.to_numeric(inventory_df.at[idx, target_col], errors='coerce')
@@ -545,6 +554,7 @@ elif page == "🚚 進貨登記":
         col1, col2 = st.columns(2)
         med_list = inventory_df["藥品名稱"].dropna().astype(str).tolist() if not inventory_df.empty else []
         med_list = [m for m in med_list if m.strip()]
+        med_list = list(set(med_list)) # 去除重複選單名
         med_list.insert(0, "+ 新增未在庫存的藥品")
         
         selected_option = col1.selectbox("選擇或新增藥品", med_list)
@@ -589,13 +599,17 @@ elif page == "🚚 進貨登記":
                 success_restock, msg1 = safe_update_sheet("進貨紀錄", updated_restock_df, RESTOCK_COLS)
                 
                 if success_restock:
-                    if not inventory_df.empty and med_name in inventory_df["藥品名稱"].values:
-                        idx = inventory_df[inventory_df["藥品名稱"] == med_name].index[0]
+                    # 判斷同名稱同批號是否存在
+                    if batch_no:
+                        m_idx = inventory_df[(inventory_df["藥品名稱"] == med_name) & (inventory_df["批號"] == batch_no)].index
+                    else:
+                        m_idx = inventory_df[inventory_df["藥品名稱"] == med_name].index
+                        
+                    if not m_idx.empty:
+                        idx = m_idx[0]
                         curr_qty = pd.to_numeric(inventory_df.at[idx, target_col], errors='coerce')
                         curr_qty = 0 if pd.isna(curr_qty) else int(curr_qty)
                         inventory_df.at[idx, target_col] = curr_qty + restock_qty
-                        if batch_no:
-                            inventory_df.at[idx, "批號"] = batch_no
                         inventory_df.at[idx, "有效期限"] = exp_date_str
                     else:
                         new_inv_row = pd.DataFrame([{
@@ -629,19 +643,25 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
             edited_u_df = st.data_editor(u_df, num_rows="dynamic", use_container_width=True, key="usage_editor")
             if st.button("💾 儲存「領用紀錄」修改並自動同步庫存", type="primary"):
                 u_df["領用數量"] = pd.to_numeric(u_df["領用數量"], errors='coerce').fillna(0)
-                old_totals = u_df.groupby("藥品名稱")["領用數量"].sum().to_dict()
+                old_totals = u_df.groupby(["藥品名稱", "批號"])["領用數量"].sum().to_dict()
                 
                 if not edited_u_df.empty and "領用數量" in edited_u_df.columns and "藥品名稱" in edited_u_df.columns:
                     edited_u_df["領用數量"] = pd.to_numeric(edited_u_df["領用數量"], errors='coerce').fillna(0)
-                    new_totals = edited_u_df.groupby("藥品名稱")["領用數量"].sum().to_dict()
+                    new_totals = edited_u_df.groupby(["藥品名稱", "批號"])["領用數量"].sum().to_dict()
                 else:
                     new_totals = {}
                 
-                for med in set(old_totals.keys()).union(set(new_totals.keys())):
+                all_keys = set(old_totals.keys()).union(set(new_totals.keys()))
+                for key in all_keys:
+                    med, batch = key
                     if not med: continue
-                    diff = old_totals.get(med, 0) - new_totals.get(med, 0)
-                    if diff != 0 and not inventory_df.empty and "藥品名稱" in inventory_df.columns:
-                        m_idx = inventory_df[inventory_df["藥品名稱"] == med].index
+                    diff = old_totals.get(key, 0) - new_totals.get(key, 0)
+                    if diff != 0 and not inventory_df.empty:
+                        if batch:
+                            m_idx = inventory_df[(inventory_df["藥品名稱"] == med) & (inventory_df["批號"] == batch)].index
+                        else:
+                            m_idx = inventory_df[inventory_df["藥品名稱"] == med].index
+                        
                         if not m_idx.empty:
                             idx = m_idx[0]
                             curr_stock = pd.to_numeric(inventory_df.at[idx, target_col], errors='coerce')
@@ -662,19 +682,25 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
             edited_r_df = st.data_editor(r_df, num_rows="dynamic", use_container_width=True, key="restock_editor")
             if st.button("💾 儲存「進貨紀錄」修改並自動同步庫存", type="primary"):
                 r_df["進貨數量"] = pd.to_numeric(r_df["進貨數量"], errors='coerce').fillna(0)
-                old_restock = r_df.groupby("藥品名稱")["進貨數量"].sum().to_dict()
+                old_restock = r_df.groupby(["藥品名稱", "批號"])["進貨數量"].sum().to_dict()
                 
                 if not edited_r_df.empty and "進貨數量" in edited_r_df.columns and "藥品名稱" in edited_r_df.columns:
                     edited_r_df["進貨數量"] = pd.to_numeric(edited_r_df["進貨數量"], errors='coerce').fillna(0)
-                    new_restock = edited_r_df.groupby("藥品名稱")["進貨數量"].sum().to_dict()
+                    new_restock = edited_r_df.groupby(["藥品名稱", "批號"])["進貨數量"].sum().to_dict()
                 else:
                     new_restock = {}
                 
-                for med in set(old_restock.keys()).union(set(new_restock.keys())):
+                all_keys = set(old_restock.keys()).union(set(new_restock.keys()))
+                for key in all_keys:
+                    med, batch = key
                     if not med: continue
-                    diff = new_restock.get(med, 0) - old_restock.get(med, 0)
-                    if diff != 0 and not inventory_df.empty and "藥品名稱" in inventory_df.columns:
-                        m_idx = inventory_df[inventory_df["藥品名稱"] == med].index
+                    diff = new_restock.get(key, 0) - old_restock.get(key, 0)
+                    if diff != 0 and not inventory_df.empty:
+                        if batch:
+                            m_idx = inventory_df[(inventory_df["藥品名稱"] == med) & (inventory_df["批號"] == batch)].index
+                        else:
+                            m_idx = inventory_df[inventory_df["藥品名稱"] == med].index
+                            
                         if not m_idx.empty:
                             idx = m_idx[0]
                             curr_stock = pd.to_numeric(inventory_df.at[idx, target_col], errors='coerce')
