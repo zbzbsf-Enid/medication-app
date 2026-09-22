@@ -1,19 +1,126 @@
 import streamlit as st
 import pandas as pd
 from streamlit_gsheets import GSheetsConnection
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 import calendar
 import io
 import xlsxwriter
 
 # ---------------------------------------------------------
-# 1. 頁面基本設定
+# 1. 台灣時區 (UTC+8) 設定與時間輔助函式
+# ---------------------------------------------------------
+TAIWAN_TZ = timezone(timedelta(hours=8))
+
+def get_tw_now():
+    """取得台灣標準時間 (UTC+8)"""
+    return datetime.now(TAIWAN_TZ)
+
+def get_tw_date():
+    """取得台灣標準日期 (UTC+8)"""
+    return get_tw_now().date()
+
+# ---------------------------------------------------------
+# 2. 頁面基本設定與溫暖風視覺 CSS
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="衛保組藥品庫存管理系統",
     page_icon="💊",
     layout="wide"
 )
+
+# 🎨 注入溫暖風格與加大字體 CSS
+st.markdown("""
+    <style>
+    /* 全域背景：溫暖柔和奶茶米色 */
+    .stApp {
+        background-color: #FAF6F0;
+        color: #3E2723;
+        font-family: "Microsoft JhengHei", "微軟正黑體", sans-serif;
+    }
+    
+    /* 側邊欄背景與字體 */
+    [data-testid="stSidebar"] {
+        background-color: #F3E9DD;
+        border-right: 1px solid #E4D5C3;
+    }
+    
+    /* 大標題 Styling */
+    h1 {
+        font-size: 2.3rem !important;
+        color: #8C4A32 !important;
+        font-weight: 800 !important;
+        padding-bottom: 0.5rem;
+    }
+    h2, h3 {
+        font-size: 1.6rem !important;
+        color: #A0522D !important;
+        font-weight: 700 !important;
+    }
+    
+    /* 全域字體大小提升 */
+    p, span, label, div, .stMarkdown, .stSelectbox label, .stNumberInput label, .stTextInput label, .stDateInput label {
+        font-size: 1.15rem !important;
+        color: #3E2723 !important;
+    }
+    
+    /* 輸入框與選擇器字體加大與圓角 */
+    input, select, textarea, div[role="combobox"] {
+        font-size: 1.1rem !important;
+        border-radius: 8px !important;
+    }
+    
+    /* 按鈕樣式：溫暖按鈕 */
+    .stButton > button {
+        font-size: 1.15rem !important;
+        font-weight: 600 !important;
+        border-radius: 12px !important;
+        padding: 0.5rem 1.2rem !important;
+        border: 1px solid #D9A07B !important;
+        background-color: #FFFDF9 !important;
+        color: #6E3B29 !important;
+        box-shadow: 0 2px 5px rgba(140, 74, 50, 0.08);
+        transition: all 0.2s ease-in-out;
+    }
+    .stButton > button:hover {
+        background-color: #E8C8B5 !important;
+        color: #4A281C !important;
+        border-color: #C88A65 !important;
+        transform: translateY(-1px);
+    }
+    
+    /* 主要按鈕 (Primary Button)：暖橘色系 */
+    button[kind="primary"] {
+        background-color: #D97706 !important;
+        color: #FFFFFF !important;
+        border: none !important;
+    }
+    button[kind="primary"]:hover {
+        background-color: #B45309 !important;
+        color: #FFFFFF !important;
+    }
+
+    /* 表單與容器：圓角暖白卡片風 */
+    .stForm, [data-testid="stExpander"], div[data-testid="metric-container"] {
+        background-color: #FFFFFF !important;
+        border-radius: 16px !important;
+        padding: 1.2rem !important;
+        border: 1px solid #E6D7C3 !important;
+        box-shadow: 0 4px 12px rgba(140, 74, 50, 0.05) !important;
+    }
+
+    /* Dataframe 表格字體放大 */
+    [data-testid="stDataFrame"] {
+        font-size: 1.1rem !important;
+        border-radius: 12px !important;
+    }
+    
+    /* Tab 標籤頁字體放大 */
+    button[data-baseweb="tab"] {
+        font-size: 1.2rem !important;
+        font-weight: 600 !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # 初始化 Google Sheets 連線
 try:
@@ -32,7 +139,7 @@ def get_spreadsheet():
         st.error(f"❌ 開啟雲端試算表失敗: {e}")
         return None
 
-# 🚀 【關鍵修正】對資料讀取加上快取 (Cache)，60 秒內不重複發送請求給 Google API
+# 快取機制 (Cache 60 秒)，避免頻繁觸發 Google API 429 限制
 @st.cache_data(ttl=60, show_spinner=False)
 def load_sheet_data(worksheet_name: str, expected_cols: list = None) -> pd.DataFrame:
     sh = get_spreadsheet()
@@ -59,7 +166,6 @@ def load_sheet_data(worksheet_name: str, expected_cols: list = None) -> pd.DataF
                 
     return df
 
-# 🚀 【關鍵修正】對試算表分頁清單加上快取 (5 分鐘)
 @st.cache_data(ttl=300, show_spinner=False)
 def get_existing_sheets():
     sh = get_spreadsheet()
@@ -94,14 +200,14 @@ def safe_update_sheet(worksheet_name: str, df: pd.DataFrame, default_headers: li
         elif default_headers:
             ws.update([default_headers])
             
-        # 🚀 寫入成功後自動清空快取，確保下次讀取到最新資料
+        # 寫入成功後自動清空快取，確保下次讀取最新資料
         st.cache_data.clear()
         return True, "成功寫入雲端"
     except Exception as err:
         return False, str(err)
 
 # ---------------------------------------------------------
-# 效期檢查輔助函式
+# 效期檢查輔助函式（採用台灣時間）
 # ---------------------------------------------------------
 def parse_exp_date(exp_str):
     """解析日期字串，支援 YYYY-MM-DD 與 YYYY-MM 格式"""
@@ -127,7 +233,7 @@ def get_expiration_status(exp_str):
     if not exp_date:
         return "NORMAL", None
     
-    today = datetime.now().date()
+    today = get_tw_date() # 使用台灣標準日期
     warning_limit = today + timedelta(days=30) # 30 天內（一個月）預警
     
     if exp_date < today:
@@ -143,9 +249,10 @@ USAGE_COLS = ["領用時間", "藥品名稱", "中文名稱", "批號", "領用�
 RESTOCK_COLS = ["進貨時間", "藥品名稱", "中文名稱", "批號", "有效期限", "進貨數量", "備註"]
 
 # ---------------------------------------------------------
-# 2. 左側邊欄功能選單與效期即時預警
+# 3. 左側邊欄功能選單與效期即時預警
 # ---------------------------------------------------------
 st.sidebar.title("💊 衛保組藥品系統")
+st.sidebar.caption(f"🕒 系統時間：{get_tw_now().strftime('%Y-%m-%d %H:%M')} (UTC+8)")
 st.sidebar.markdown("---")
 
 page = st.sidebar.radio(
@@ -194,7 +301,6 @@ st.sidebar.header("⚙️ 系統設定")
 existing_sheets = get_existing_sheets()
 if existing_sheets:
     st.sidebar.success("✅ Google Sheet 連線正常")
-    st.sidebar.write("🔍 目前雲端分頁：", existing_sheets)
 
 if st.sidebar.button("🔄 手動刷新雲端資料", use_container_width=True):
     st.cache_data.clear()
@@ -206,7 +312,7 @@ if "claim_cart" not in st.session_state:
     st.session_state.claim_cart = []
 
 # ---------------------------------------------------------
-# 3. 主頁面內容控制
+# 4. 主頁面內容控制
 # ---------------------------------------------------------
 
 # --- 頁面 1: 藥品領用登記 ---
@@ -309,7 +415,8 @@ if page == "📋 藥品領用登記":
             )
             
             col_info1, col_info2 = st.columns([1, 2])
-            use_date = col_info1.date_input("領用日期", datetime.now())
+            # 🕒 正確設置台灣標準日期
+            use_date = col_info1.date_input("領用日期", get_tw_date())
             with col_info2:
                 st.write(" ")
                 st.write(" ")
@@ -418,7 +525,8 @@ elif page == "🚚 進貨登記":
             med_name = col1.text_input("藥品英文名稱", "")
             zh_name = col2.text_input("藥品中文名稱", "")
             batch_no = col1.text_input("批號 (Batch No.)", "")
-            exp_date_val = col2.date_input("有效期限", datetime.now().date() + timedelta(days=365))
+            # 🕒 採用台灣日期
+            exp_date_val = col2.date_input("有效期限", get_tw_date() + timedelta(days=365))
         else:
             med_name = selected_option
             matched = inventory_df[inventory_df["藥品名稱"] == med_name]
@@ -429,11 +537,12 @@ elif page == "🚚 進貨登記":
             col2.text_input("藥品中文名稱", value=str(zh_name), disabled=True)
             batch_no = col1.text_input("批號 (Batch No.)", value=str(exist_batch))
             
-            default_d = parse_exp_date(exist_exp) or (datetime.now().date() + timedelta(days=365))
+            default_d = parse_exp_date(exist_exp) or (get_tw_date() + timedelta(days=365))
             exp_date_val = col2.date_input("有效期限", value=default_d)
             
         restock_qty = col2.number_input("進貨數量", min_value=1, step=1, value=100)
-        restock_date = col1.date_input("進貨日期", datetime.now())
+        # 🕒 進貨日期預設為台灣標準日期
+        restock_date = col1.date_input("進貨日期", get_tw_date())
         restock_remarks = col2.text_input("進貨備註 / 廠商資訊", "")
         
         if st.form_submit_button("確認進貨並更新雲端庫存", use_container_width=True):
@@ -560,9 +669,10 @@ elif page == "📊 月報表下載":
     st.title("📊 藥品使用月報表與統計表繪出")
     st.write("產出格式符合國立臺北大學衛保組月報表標準格式。")
     
+    tw_now = get_tw_now()
     col_y, col_m = st.columns(2)
-    selected_year = col_y.number_input("選擇年份(西元)", min_value=2020, max_value=2030, value=datetime.now().year)
-    selected_month = col_m.selectbox("選擇月份", list(range(1, 13)), index=datetime.now().month - 1)
+    selected_year = col_y.number_input("選擇年份(西元)", min_value=2020, max_value=2030, value=tw_now.year)
+    selected_month = col_m.selectbox("選擇月份", list(range(1, 13)), index=tw_now.month - 1)
     
     roc_year = selected_year - 1911
     acad_year = roc_year - 1 if selected_month < 8 else roc_year
