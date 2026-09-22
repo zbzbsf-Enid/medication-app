@@ -32,7 +32,8 @@ def get_spreadsheet():
         st.error(f"❌ 開啟雲端試算表失敗: {e}")
         return None
 
-# 讀取特定分頁資料（含防護性欄位補齊機制）
+# 🚀 【關鍵修正】對資料讀取加上快取 (Cache)，60 秒內不重複發送請求給 Google API
+@st.cache_data(ttl=60, show_spinner=False)
 def load_sheet_data(worksheet_name: str, expected_cols: list = None) -> pd.DataFrame:
     sh = get_spreadsheet()
     if expected_cols is None:
@@ -58,6 +59,17 @@ def load_sheet_data(worksheet_name: str, expected_cols: list = None) -> pd.DataF
                 
     return df
 
+# 🚀 【關鍵修正】對試算表分頁清單加上快取 (5 分鐘)
+@st.cache_data(ttl=300, show_spinner=False)
+def get_existing_sheets():
+    sh = get_spreadsheet()
+    if sh:
+        try:
+            return [ws.title for ws in sh.worksheets()]
+        except Exception:
+            return []
+    return []
+
 # 原生 gspread 寫入邏輯
 def safe_update_sheet(worksheet_name: str, df: pd.DataFrame, default_headers: list = None):
     sh = get_spreadsheet()
@@ -82,6 +94,8 @@ def safe_update_sheet(worksheet_name: str, df: pd.DataFrame, default_headers: li
         elif default_headers:
             ws.update([default_headers])
             
+        # 🚀 寫入成功後自動清空快取，確保下次讀取到最新資料
+        st.cache_data.clear()
         return True, "成功寫入雲端"
     except Exception as err:
         return False, str(err)
@@ -95,12 +109,12 @@ def parse_exp_date(exp_str):
         return None
     clean_str = str(exp_str).strip().replace('/', '-')
     try:
-        if len(clean_str) == 7: # YYYY-MM
+        if len(clean_str) == 7:
             parts = clean_str.split('-')
             y, m = int(parts[0]), int(parts[1])
             _, last_day = calendar.monthrange(y, m)
             return date(y, m, last_day)
-        elif len(clean_str) >= 10: # YYYY-MM-DD
+        elif len(clean_str) >= 10:
             clean_str = clean_str[:10]
             return datetime.strptime(clean_str, "%Y-%m-%d").date()
     except Exception:
@@ -123,7 +137,7 @@ def get_expiration_status(exp_str):
     else:
         return "NORMAL", exp_date
 
-# 預設標準欄位定義（已加入「有效期限」）
+# 預設標準欄位定義
 INV_COLS = ["藥品名稱", "中文名稱", "現有庫存", "批號", "有效期限", "備註"]
 USAGE_COLS = ["領用時間", "藥品名稱", "中文名稱", "批號", "領用數量", "領用類別", "備註"]
 RESTOCK_COLS = ["進貨時間", "藥品名稱", "中文名稱", "批號", "有效期限", "進貨數量", "備註"]
@@ -176,6 +190,11 @@ if expired_items or warning_items:
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 系統設定")
+
+existing_sheets = get_existing_sheets()
+if existing_sheets:
+    st.sidebar.success("✅ Google Sheet 連線正常")
+    st.sidebar.write("🔍 目前雲端分頁：", existing_sheets)
 
 if st.sidebar.button("🔄 手動刷新雲端資料", use_container_width=True):
     st.cache_data.clear()
@@ -246,7 +265,6 @@ if page == "📋 藥品領用登記":
             with col_sel3:
                 st.write(" ")
                 st.write(" ")
-                # 🚫 若已過期，直接禁用「加入領用清單」按鈕
                 if sel_status == "EXPIRED":
                     st.button("🚫 已過期(禁領)", disabled=True, use_container_width=True)
                 else:
@@ -265,7 +283,6 @@ if page == "📋 藥品領用登記":
                             })
                             st.toast(f"已將 {sel_zh_name or sel_med_name} 加入領用清單！")
 
-            # 提示狀態橫幅
             if sel_status == "EXPIRED":
                 st.error(f"🛑 **警告：【{sel_zh_name or sel_med_name}】已於 {sel_exp_d} 到期！過期藥品禁止領用。**")
             elif sel_status == "WARNING":
@@ -346,7 +363,6 @@ if page == "📋 藥品領用登記":
                     if ok1 and ok2:
                         st.success(f"🎉 成功登記 {len(new_rows)} 項【{claim_type}】藥品領用，庫存已同步扣減！")
                         st.session_state.claim_cart = []
-                        st.cache_data.clear()
                     else:
                         st.error(f"❌ 更新失敗: 領用紀錄({msg1}) / 庫存({msg2})")
         else:
@@ -381,7 +397,6 @@ elif page == "📦 藥品庫存清單(可編修庫存/批號/效期)":
         ok, msg = safe_update_sheet("庫存", edited_inv_df, INV_COLS)
         if ok:
             st.success("✅ 藥品庫存與有效期限資料已成功更新至 Google Sheets！")
-            st.cache_data.clear()
             st.rerun()
         else:
             st.error(f"❌ 儲存失敗：{msg}")
@@ -462,7 +477,6 @@ elif page == "🚚 進貨登記":
                     success_inv, msg2 = safe_update_sheet("庫存", inventory_df)
                     if success_inv:
                         st.success(f"✅ 成功進貨：{zh_name or med_name} {restock_qty} 個！有效期限已設為 {exp_date_str}")
-                        st.cache_data.clear()
                     else:
                         st.error(f"❌ 庫存更新失敗：{msg2}")
                 else:
@@ -504,7 +518,6 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
                 ok2, msg2 = safe_update_sheet("庫存", inventory_df)
                 if ok1 and ok2:
                     st.success("✅ 領用紀錄已更新，庫存已精準同步加減！")
-                    st.cache_data.clear()
                     st.rerun()
         else:
             st.info("目前無領用紀錄。")
@@ -538,7 +551,6 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
                 ok2, msg2 = safe_update_sheet("庫存", inventory_df)
                 if ok1 and ok2:
                     st.success("✅ 進貨紀錄已更新，庫存已同步調整！")
-                    st.cache_data.clear()
                     st.rerun()
         else:
             st.info("目前無進貨紀錄。")
