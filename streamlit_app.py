@@ -20,7 +20,7 @@ def get_tw_date():
     return get_tw_now().date()
 
 # ---------------------------------------------------------
-# 2. 頁面基本設定與溫暖風視覺 CSS
+# 2. 頁面基本設定與溫暖風視覺 CSS (加大標題字體與加粗)
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="衛保組藥品庫存管理系統",
@@ -28,7 +28,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# 🎨 注入溫暖風格與加大字體 CSS
+# 🎨 注入溫暖風格與加大加粗標題 CSS
 st.markdown("""
     <style>
     /* 全域背景：溫暖柔和奶茶米色 */
@@ -38,32 +38,54 @@ st.markdown("""
         font-family: "Microsoft JhengHei", "微軟正黑體", sans-serif;
     }
     
-    /* 側邊欄背景與字體 */
+    /* 側邊欄背景與邊框 */
     [data-testid="stSidebar"] {
         background-color: #F3E9DD;
         border-right: 1px solid #E4D5C3;
     }
     
-    /* 大標題 Styling */
-    h1 {
-        font-size: 2.3rem !important;
+    /* 🌟 主功能標題 (st.title / h1)：特大字體 + 超粗體 */
+    h1, .stApp h1 {
+        font-size: 2.7rem !important;
         color: #8C4A32 !important;
-        font-weight: 800 !important;
-        padding-bottom: 0.5rem;
-    }
-    h2, h3 {
-        font-size: 1.6rem !important;
-        color: #A0522D !important;
-        font-weight: 700 !important;
+        font-weight: 900 !important;
+        padding-bottom: 0.6rem;
+        letter-spacing: 0.5px;
     }
     
-    /* 全域字體大小提升 */
+    /* 🌟 下一階層功能標題 (st.header, st.subheader / h2, h3)：加大字體 + 特粗體 */
+    h2, h3, .stApp h2, .stApp h3 {
+        font-size: 1.9rem !important;
+        color: #A0522D !important;
+        font-weight: 800 !important;
+        margin-top: 1.2rem !important;
+        margin-bottom: 0.6rem !important;
+    }
+    
+    /* 🌟 側邊欄標題與選項標題加粗加大 */
+    [data-testid="stSidebar"] h1 {
+        font-size: 2.2rem !important;
+        font-weight: 900 !important;
+    }
+    
+    [data-testid="stSidebar"] .stRadio > label {
+        font-size: 1.35rem !important;
+        font-weight: 800 !important;
+        color: #6E3B29 !important;
+    }
+    
+    [data-testid="stSidebar"] div[role="radiogroup"] label {
+        font-size: 1.2rem !important;
+        font-weight: 700 !important;
+    }
+
+    /* 全域一般內文字體 */
     p, span, label, div, .stMarkdown, .stSelectbox label, .stMultiSelect label, .stNumberInput label, .stTextInput label, .stDateInput label {
         font-size: 1.15rem !important;
         color: #3E2723 !important;
     }
     
-    /* 輸入框與選擇器字體加大與圓角 */
+    /* 輸入框與選擇器字體與圓角 */
     input, select, textarea, div[role="combobox"] {
         font-size: 1.1rem !important;
         border-radius: 8px !important;
@@ -72,7 +94,7 @@ st.markdown("""
     /* 按鈕樣式：溫暖按鈕 */
     .stButton > button {
         font-size: 1.15rem !important;
-        font-weight: 600 !important;
+        font-weight: 700 !important;
         border-radius: 12px !important;
         padding: 0.5rem 1.2rem !important;
         border: 1px solid #D9A07B !important;
@@ -93,6 +115,7 @@ st.markdown("""
         background-color: #D97706 !important;
         color: #FFFFFF !important;
         border: none !important;
+        font-weight: 800 !important;
     }
     button[kind="primary"]:hover {
         background-color: #B45309 !important;
@@ -108,16 +131,16 @@ st.markdown("""
         box-shadow: 0 4px 12px rgba(140, 74, 50, 0.05) !important;
     }
 
-    /* Dataframe 表格字體放大 */
+    /* Dataframe 表格字體 */
     [data-testid="stDataFrame"] {
         font-size: 1.1rem !important;
         border-radius: 12px !important;
     }
     
-    /* Tab 標籤頁字體放大 */
+    /* Tab 標籤頁字體放大加粗 */
     button[data-baseweb="tab"] {
-        font-size: 1.2rem !important;
-        font-weight: 600 !important;
+        font-size: 1.3rem !important;
+        font-weight: 800 !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -292,7 +315,7 @@ if expired_items or warning_items:
             st.warning(f"**一個月內即將到期 ({len(warning_items)} 項)：**\n" + "\n".join([f"- {i}" for i in warning_items]))
 
 st.sidebar.markdown("---")
-st.sidebar.header("⚙️ 系統設定")
+st.sidebar.markdown("### ⚙️ 系統設定")
 
 existing_sheets = get_existing_sheets()
 if existing_sheets:
@@ -311,7 +334,7 @@ if "claim_cart" not in st.session_state:
 # 4. 主頁面內容控制
 # ---------------------------------------------------------
 
-# --- 頁面 1: 藥品領用登記 (修正同名不同批號 Duplicate Key 問題) ---
+# --- 頁面 1: 藥品領用登記 ---
 if page == "📋 藥品領用登記":
     st.title("📋 藥品領用登記")
     inventory_df = load_sheet_data("庫存", INV_COLS)
@@ -358,14 +381,12 @@ if page == "📋 藥品領用登記":
                 "exp_d": exp_d
             }
         
-        # 🌟 多選下拉選單
         selected_med_strs = st.multiselect("可一次搜尋並選擇多款藥品：", med_options, key="multi_med_select")
         
         if selected_med_strs:
-            st.markdown("##### ✏️ 請鍵入各藥品的領用數量：")
+            st.markdown("### ✏️ 請鍵入各藥品的領用數量：")
             input_quantities = {}
             
-            # 動態渲染所選藥品的數量輸入欄位
             for idx, opt_str in enumerate(selected_med_strs):
                 info = med_mapping[opt_str]
                 disp_name = f"{info['m_name']} ({info['z_name']})" if info['z_name'] else info['m_name']
@@ -386,7 +407,6 @@ if page == "📋 藥品領用登記":
                     
                 with col_m3:
                     if info['status'] != "EXPIRED":
-                        # ✅ 使用 idx + opt_str 確保 key 的唯一性（避免同名不同批號時出現 Duplicate Key 錯誤）
                         q = st.number_input(
                             "數量", 
                             min_value=1, 
@@ -408,7 +428,6 @@ if page == "📋 藥品領用登記":
                         batch_no = info['batch_no']
                         q = input_quantities.get(opt_str, 1)
                         
-                        # ✅ 比對「藥品名稱」與「批號」，精準區分不同批號的同款藥品
                         existing_item = next((item for item in st.session_state.claim_cart if item["藥品名稱"] == m_name and item["批號"] == batch_no), None)
                         if existing_item:
                             existing_item["領用數量"] += q
@@ -487,7 +506,6 @@ if page == "📋 藥品領用登記":
                             "備註": ""
                         })
                         
-                        # ✅ 精準比對「藥品名稱」與「批號」扣減對應庫存
                         if b_no:
                             m_idx = inventory_df[(inventory_df["藥品名稱"] == m_name) & (inventory_df["批號"] == b_no)].index
                         else:
@@ -554,7 +572,7 @@ elif page == "🚚 進貨登記":
         col1, col2 = st.columns(2)
         med_list = inventory_df["藥品名稱"].dropna().astype(str).tolist() if not inventory_df.empty else []
         med_list = [m for m in med_list if m.strip()]
-        med_list = list(set(med_list)) # 去除重複選單名
+        med_list = list(set(med_list))
         med_list.insert(0, "+ 新增未在庫存的藥品")
         
         selected_option = col1.selectbox("選擇或新增藥品", med_list)
@@ -599,7 +617,6 @@ elif page == "🚚 進貨登記":
                 success_restock, msg1 = safe_update_sheet("進貨紀錄", updated_restock_df, RESTOCK_COLS)
                 
                 if success_restock:
-                    # 判斷同名稱同批號是否存在
                     if batch_no:
                         m_idx = inventory_df[(inventory_df["藥品名稱"] == med_name) & (inventory_df["批號"] == batch_no)].index
                     else:
