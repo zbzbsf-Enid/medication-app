@@ -197,16 +197,22 @@ if page == "📋 藥品領用登記":
                 key="cart_data_editor"
             )
             
-            col_info1, col_info2 = st.columns(2)
+            col_info1, col_info2, col_info3 = st.columns([1, 1, 2])
             use_date = col_info1.date_input("領用日期", datetime.now())
-            remarks = col_info2.text_input("備註 / 領用單位或個人", "")
+            
+            # 使用勾選框決定「個人」或「公藥」
+            st.write(" ")
+            is_public_med = col_info2.checkbox("🏥 勾選為「公藥領用」", value=False, help="未勾選時預設為「個人領用」")
+            claim_type = "公藥" if is_public_med else "個人"
+            
+            remarks = col_info3.text_input("備註 / 領用單位或個人", "")
             
             col_btn1, col_btn2 = st.columns([1, 4])
             if col_btn1.button("🗑️ 清空領用清單", use_container_width=True):
                 st.session_state.claim_cart = []
                 st.rerun()
                 
-            confirm_check = col_btn2.checkbox("✅ 我已仔細核對上述所有領用品項與數量，確認無誤。")
+            confirm_check = col_btn2.checkbox(f"✅ 我已仔細核對上述所有領用品項與數量，確認為【{claim_type}】領用無誤。")
             
             if st.button("🚀 確認無誤，寫入雲端並扣減庫存", type="primary", use_container_width=True):
                 if not confirm_check:
@@ -229,6 +235,7 @@ if page == "📋 藥品領用登記":
                             "中文名稱": z_name,
                             "批號": b_no,
                             "領用數量": u_qty,
+                            "領用類別": claim_type,
                             "備註": remarks
                         })
                         
@@ -242,11 +249,11 @@ if page == "📋 藥品領用登記":
                     
                     new_usage_df = pd.concat([usage_df, pd.DataFrame(new_rows)], ignore_index=True)
                     
-                    ok1, msg1 = safe_update_sheet("領用紀錄", new_usage_df, ["領用時間", "藥品名稱", "中文名稱", "批號", "領用數量", "備註"])
+                    ok1, msg1 = safe_update_sheet("領用紀錄", new_usage_df, ["領用時間", "藥品名稱", "中文名稱", "批號", "領用數量", "領用類別", "備註"])
                     ok2, msg2 = safe_update_sheet("庫存", inventory_df)
                     
                     if ok1 and ok2:
-                        st.success(f"🎉 成功登記 {len(new_rows)} 項藥品領用，庫存已同步扣減！")
+                        st.success(f"🎉 成功登記 {len(new_rows)} 項【{claim_type}】藥品領用，庫存已同步扣減！")
                         st.session_state.claim_cart = []
                         st.cache_data.clear()
                     else:
@@ -267,7 +274,6 @@ elif page == "📦 藥品庫存清單(可編修庫存/批號)":
         if col_name not in inventory_df.columns:
             inventory_df[col_name] = "" if col_name != target_col else 0
             
-    # 讓數據類型合規
     inventory_df[target_col] = pd.to_numeric(inventory_df[target_col], errors='coerce').fillna(0).astype(int)
     
     edited_inv_df = st.data_editor(
@@ -407,7 +413,7 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
                 else:
                     new_totals = {}
                 
-                # 3. 差額計算 (舊 - 新)
+                # 3. 差額計算
                 all_meds = set(old_totals.keys()).union(set(new_totals.keys()))
                 
                 for med in all_meds:
@@ -459,7 +465,7 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
                 else:
                     new_restock = {}
                 
-                # 3. 差額計算 (新 - 舊)
+                # 3. 差額計算
                 all_meds_r = set(old_restock.keys()).union(set(new_restock.keys()))
                 
                 for med in all_meds_r:
@@ -543,6 +549,20 @@ elif page == "📊 月報表下載":
                 row_dict[col_name] = int(u_qty) if not pd.isna(u_qty) else 0
                 daily_total += row_dict[col_name]
                 
+            # 計算當月公藥使用量
+            if not usage_df.empty and "領用時間" in usage_df.columns:
+                m_start = f"{selected_year}-{selected_month:02d}-01"
+                m_end = f"{selected_year}-{selected_month:02d}-{num_days:02d}"
+                m_usage = usage_df[(usage_df["藥品名稱"] == med_name) & (usage_df["領用時間"] >= m_start) & (usage_df["領用時間"] <= m_end)]
+                
+                if "領用類別" in m_usage.columns:
+                    public_qty = pd.to_numeric(m_usage[m_usage["領用類別"] == "公藥"]["領用數量"], errors='coerce').sum()
+                else:
+                    public_qty = 0
+            else:
+                public_qty = 0
+                
+            # 計算進貨數量
             if not restock_df.empty and "進貨時間" in restock_df.columns:
                 m_start = f"{selected_year}-{selected_month:02d}-01"
                 m_end = f"{selected_year}-{selected_month:02d}-{num_days:02d}"
@@ -554,7 +574,7 @@ elif page == "📊 月報表下載":
             row_dict["當月使用\n總量"] = daily_total
             row_dict["購入量"] = int(restock_qty)
             row_dict["過期報銷"] = 0
-            row_dict["公藥使用"] = 0
+            row_dict["公藥使用"] = int(public_qty)
             row_dict[f"{roc_year}年{selected_month}月\n期末剩餘量"] = curr_stock
             
             report_rows.append(row_dict)
