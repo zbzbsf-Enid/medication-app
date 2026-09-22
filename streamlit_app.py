@@ -15,7 +15,7 @@ st.set_page_config(
 st.title("💊 國立臺北大學衛保組 藥品管理系統")
 
 # -----------------------------------------------------------------------------
-# 1. 雲端 Google Sheets 連線與智慧全分頁掃描 (解決工作表名稱不一致問題)
+# 1. 雲端 Google Sheets 連線與資料讀取
 # -----------------------------------------------------------------------------
 def get_connection():
     return st.connection("gsheets", type=GSheetsConnection)
@@ -26,14 +26,11 @@ conn = get_connection()
 def load_base_data():
     """讀取庫存與領用紀錄流水帳"""
     try:
-        # 1. 嘗試讀取『庫存』工作表，若無則讀取預設第一頁
+        # 1. 讀取『庫存』工作表
         df_inventory = None
         for inv_name in ["庫存", "Sheet1", "工作表1", None]:
             try:
-                if inv_name:
-                    tmp = conn.read(worksheet=inv_name, ttl=60)
-                else:
-                    tmp = conn.read(ttl=60)
+                tmp = conn.read(worksheet=inv_name, ttl=60) if inv_name else conn.read(ttl=60)
                 if tmp is not None and not tmp.empty:
                     cols_str = " ".join([str(c) for c in tmp.columns])
                     if any(k in cols_str for k in ['藥品', '品名', '名稱', '現有庫存', '剩餘量']):
@@ -42,7 +39,7 @@ def load_base_data():
             except Exception:
                 continue
 
-        # 2. 嘗試讀取『領用紀錄』流水帳
+        # 2. 讀取『領用紀錄』流水帳
         df_logs = None
         for log_name in ["領用紀錄", "用藥紀錄", "紀錄", "Logs"]:
             try:
@@ -54,7 +51,7 @@ def load_base_data():
         if df_logs is None or df_logs.empty:
             df_logs = pd.DataFrame(columns=['日期', '藥品名稱', '批號', '領用數量', '備註'])
 
-        # 欄位標準化：庫存表
+        # 庫存表欄位標準化
         if df_inventory is not None and not df_inventory.empty:
             col_map = {}
             for col in df_inventory.columns:
@@ -74,7 +71,7 @@ def load_base_data():
             if '現有庫存' in df_inventory.columns:
                 df_inventory['現有庫存'] = pd.to_numeric(df_inventory['現有庫存'], errors='coerce').fillna(0).astype(int)
 
-        # 欄位標準化：領用紀錄表
+        # 領用紀錄表欄位標準化
         if df_logs is not None and not df_logs.empty:
             log_col_map = {}
             for col in df_logs.columns:
@@ -98,31 +95,19 @@ def load_base_data():
         st.error(f"❌ 讀取雲端資料失敗：{e}")
         st.stop()
 
-@st.cache_data(ttl=60, show_spinner="自動掃描歷史月報表中...")
-def auto_find_monthly_sheet():
-    """自動尋找包含 9/7~9/22 歷史紀錄矩陣表"""
-    candidates = [
-        None, "Sheet1", "工作表1", "用藥月報表", "月報表", "9月", "9月月報表", 
-        "用藥紀錄", "9月用藥", "用藥月報表與學期統計", "Sheet2", "工作表2"
-    ]
-    for name in candidates:
-        try:
-            if name is None:
-                df = conn.read(ttl=60)
-            else:
-                df = conn.read(worksheet=name, ttl=60)
-            
-            if df is not None and not df.empty:
-                cols_str = " ".join([str(c) for c in df.columns])
-                # 若包含日期格式或月報表標誌欄位
-                if any(k in cols_str for k in ['9/7', '9/1', '9/10', '9/15', '9/22', '當月使用', '剩餘量', '8月']):
-                    return df, name if name else "試算表第一頁 (預設)"
-        except Exception:
-            continue
-    return None, None
+@st.cache_data(ttl=60, show_spinner="讀取試算表原檔中...")
+def load_raw_monthly_sheet(sheet_name=None):
+    """直接讀取試算表原檔分頁 (若未指定名稱則預設讀取第一頁)"""
+    try:
+        if sheet_name:
+            df = conn.read(worksheet=sheet_name, ttl=60)
+        else:
+            df = conn.read(ttl=60) # 預設讀取 Google Sheet 第一張工作表
+        return df
+    except Exception as e:
+        return None
 
 df_inventory, df_logs = load_base_data()
-df_monthly_auto, matched_sheet_name = auto_find_monthly_sheet()
 
 # -----------------------------------------------------------------------------
 # 2. 先進先出 (FIFO) 庫存扣減邏輯
@@ -172,7 +157,7 @@ def deduct_inventory_fifo(inventory_df, drug_name, req_qty, log_date, note=""):
     return df_inv, new_logs, status_msg
 
 # -----------------------------------------------------------------------------
-# 3. 側邊欄與完整功能選單 (5大功能頁面)
+# 3. 側邊欄與完整功能選單
 # -----------------------------------------------------------------------------
 st.sidebar.title("📌 功能選單")
 
@@ -299,7 +284,7 @@ elif menu == "🏥 藥品進貨/建檔登記":
                 except Exception as e:
                     st.error(f"❌ 寫入失敗：{e}")
 
-    else: # 新增全新藥品品項
+    else:
         col1, col2 = st.columns(2)
         with col1:
             new_drug_name = st.text_input("全新藥品名稱 (商品名/中文)")
@@ -354,7 +339,7 @@ elif menu == "📊 當前庫存總覽":
     st.dataframe(df_inventory, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# 頁面 5：用藥月報表與學期統計
+# 頁面 5：用藥月報表與學期統計 (直讀 Google Sheet 原檔)
 # -----------------------------------------------------------------------------
 elif menu == "🗓️ 用藥月報表與學期統計":
     st.header("🗓️ 用藥月報表與學期統計")
@@ -362,24 +347,23 @@ elif menu == "🗓️ 用藥月報表與學期統計":
     tab1, tab2 = st.tabs(["📄 雲端月報表 (試算表原檔)", "🔄 智慧動態報表 (依交易紀錄計算)"])
 
     with tab1:
-        # 手動指定分頁名稱輸入框 (防護機制)
-        with st.expander("🔍 如果自動載入的分頁不正確，請點此輸入您的 Google Sheet 分頁標籤名稱"):
-            custom_sheet = st.text_input("請輸入 Google Sheet 下方的分頁標籤名稱 (例如: Sheet1 或 9月用藥)", value="")
-            if custom_sheet:
-                try:
-                    df_custom = conn.read(worksheet=custom_sheet, ttl=60)
-                    st.success(f"✅ 成功載入『{custom_sheet}』工作表資料！")
-                    st.dataframe(df_custom, use_container_width=True)
-                except Exception as e:
-                    st.error(f"❌ 無法讀取『{custom_sheet}』工作表：{e}")
+        col_input, _ = st.columns([2, 1])
+        with col_input:
+            custom_sheet = st.text_input(
+                "📌 指定 Google Sheet 分頁名稱 (若留空則預設讀取試算表第一頁)：", 
+                value="",
+                placeholder="例如: 9月用藥 或 Sheet1"
+            )
 
-        # 若使用者沒有手動輸入，則顯示自動掃描結果
-        if not custom_sheet:
-            if df_monthly_auto is not None:
-                st.success(f"✅ 已自動識別並載入工作表：【{matched_sheet_name}】(含 9/7 ~ 9/22 歷史紀錄)")
-                st.dataframe(df_monthly_auto, use_container_width=True)
-            else:
-                st.warning("⚠️ 未能自動辨識月報表分頁。請點擊上方搜尋欄，輸入您 Google Sheet 底下的分頁標籤名稱 (例如: Sheet1、工作表1 或 9月用藥)。")
+        target_sheet = custom_sheet.strip() if custom_sheet.strip() else None
+        df_monthly_raw = load_raw_monthly_sheet(target_sheet)
+
+        if df_monthly_raw is not None and not df_monthly_raw.empty:
+            display_name = target_sheet if target_sheet else "試算表預設第一頁"
+            st.success(f"✅ 成功載入【{display_name}】月報表完整原檔紀錄！")
+            st.dataframe(df_monthly_raw, use_container_width=True)
+        else:
+            st.error(f"❌ 無法讀取指定的工作表「{target_sheet}」，請確認 Google Sheet 底下的分頁名稱標籤是否正確。")
 
     with tab2:
         if df_logs.empty or '領用數量' not in df_logs.columns:
