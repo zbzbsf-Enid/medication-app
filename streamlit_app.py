@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import io
+import calendar
 from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
@@ -97,14 +99,14 @@ def load_base_data():
 
 @st.cache_data(ttl=60, show_spinner="讀取試算表原檔中...")
 def load_raw_monthly_sheet(sheet_name=None):
-    """直接讀取試算表原檔分頁 (若未指定名稱則預設讀取第一頁)"""
+    """直接讀取試算表原檔分頁"""
     try:
         if sheet_name:
             df = conn.read(worksheet=sheet_name, ttl=60)
         else:
-            df = conn.read(ttl=60) # 預設讀取 Google Sheet 第一張工作表
+            df = conn.read(ttl=60)
         return df
-    except Exception as e:
+    except Exception:
         return None
 
 df_inventory, df_logs = load_base_data()
@@ -157,7 +159,7 @@ def deduct_inventory_fifo(inventory_df, drug_name, req_qty, log_date, note=""):
     return df_inv, new_logs, status_msg
 
 # -----------------------------------------------------------------------------
-# 3. 側邊欄與完整功能選單
+# 3. 側邊欄與功能選單
 # -----------------------------------------------------------------------------
 st.sidebar.title("📌 功能選單")
 
@@ -173,7 +175,7 @@ menu = st.sidebar.radio(
         "🏥 藥品進貨/建檔登記",
         "🛠️ 紀錄修改與庫存微調",
         "📊 當前庫存總覽",
-        "🗓️ 用藥月報表與學期統計"
+        "🗓️ 官方月報表與學期統計 (全月份動態產生)"
     ]
 )
 
@@ -339,20 +341,121 @@ elif menu == "📊 當前庫存總覽":
     st.dataframe(df_inventory, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# 頁面 5：用藥月報表與學期統計 (直讀 Google Sheet 原檔)
+# 頁面 5：官方月報表與學期統計 (任意年份 / 任意月份 100% 動態生成)
 # -----------------------------------------------------------------------------
-elif menu == "🗓️ 用藥月報表與學期統計":
-    st.header("🗓️ 用藥月報表與學期統計")
+elif menu == "🗓️ 官方月報表與學期統計 (全月份動態產生)":
+    st.header("🗓️ 國立臺北大學校園門診藥品統計表")
 
-    tab1, tab2 = st.tabs(["📄 雲端月報表 (試算表原檔)", "🔄 智慧動態報表 (依交易紀錄計算)"])
+    tab1, tab2 = st.tabs(["✨ 選取月份生成官方格式月報表 (可匯出 Excel)", "📄 雲端 Google Sheet 原檔備份"])
 
     with tab1:
+        c1, c2, c3 = st.columns([1.5, 1.5, 3])
+        with c1:
+            roc_year = st.number_input("民國年份", min_value=110, max_value=130, value=115, step=1)
+            ad_year = roc_year + 1911
+        with c2:
+            sel_month = st.selectbox("選擇月份", list(range(1, 13)), index=8) # 預設 9 月
+        with c3:
+            term_title = st.text_input("學期報表標題", value=f"{roc_year}-1 國立臺北大學校園門診藥品統計表")
+
+        # 計算前一個月與對應年份 (跨年處理)
+        if sel_month == 1:
+            prev_month = 12
+            prev_roc_year = roc_year - 1
+        else:
+            prev_month = sel_month - 1
+            prev_roc_year = roc_year
+
+        prev_month_label = f"{prev_roc_year}年{prev_month}月剩餘量"
+        curr_month_label = f"{roc_year}年{sel_month}月剩餘量"
+
+        # 當月天數推算 (例如 9月為30天, 10月為31天)
+        _, num_days = calendar.monthrange(ad_year, sel_month)
+
+        # 篩選當月領用紀錄
+        if not df_logs.empty and '日期' in df_logs.columns:
+            df_logs_calc = df_logs.copy()
+            df_logs_calc['dt'] = pd.to_datetime(df_logs_calc['日期'], errors='coerce')
+            df_month_logs = df_logs_calc[
+                (df_logs_calc['dt'].dt.year == ad_year) & 
+                (df_logs_calc['dt'].dt.month == sel_month)
+            ].copy()
+            df_month_logs['領用數量'] = pd.to_numeric(df_month_logs['領用數量'], errors='coerce').fillna(0)
+        else:
+            df_month_logs = pd.DataFrame()
+
+        unique_drugs = sorted(df_inventory['藥品名稱'].dropna().unique().tolist()) if not df_inventory.empty else []
+
+        # 建立動態欄位 DataFrame
+        rows = []
+        for drug in unique_drugs:
+            row_data = {}
+            row_data[f'藥品 / {sel_month}月用量'] = drug
+            row_data[prev_month_label] = ""
+
+            # 當月每日用量 (1日 ~ 當月最後一天)
+            for d in range(1, num_days + 1):
+                d_str = f"{sel_month}/{d}"
+                if not df_month_logs.empty:
+                    d_qty = df_month_logs[(df_month_logs['藥品名稱'] == drug) & (df_month_logs['dt'].dt.day == d)]['領用數量'].sum()
+                    row_data[d_str] = int(d_qty) if d_qty > 0 else ""
+                else:
+                    row_data[d_str] = ""
+
+            # 當月消耗總量
+            if not df_month_logs.empty:
+                consumed = df_month_logs[df_month_logs['藥品名稱'] == drug]['領用數量'].sum()
+                row_data[f'{sel_month}月消耗總量'] = int(consumed) if consumed > 0 else 0
+            else:
+                row_data[f'{sel_month}月消耗總量'] = 0
+
+            # 購入與過期報銷
+            row_data['購入量'] = ""
+            row_data['過期報銷'] = ""
+            row_data[f'{prev_month}月購入量'] = ""
+            row_data[f'{sel_month}月購入量'] = ""
+
+            # 當月剩餘量與總盤點
+            curr_stock = df_inventory[df_inventory['藥品名稱'] == drug]['現有庫存'].sum() if not df_inventory.empty else 0
+            row_data[curr_month_label] = int(curr_stock)
+            row_data[f'{sel_month}月總盤點'] = int(curr_stock)
+
+            rows.append(row_data)
+
+        official_df = pd.DataFrame(rows)
+
+        st.subheader(f"📊 {term_title} ({roc_year}年{sel_month}月)")
+        st.dataframe(official_df, use_container_width=True)
+
+        # -----------------------------------------------------------------------------
+        # 一鍵匯出 官方格式 Excel (.xlsx) 檔案
+        # -----------------------------------------------------------------------------
+        output = io.BytesIO()
+        sheet_tag = f"{sel_month}月"
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            official_df.to_excel(writer, sheet_name=sheet_tag, index=False, startrow=2)
+            worksheet = writer.sheets[sheet_tag]
+            
+            # 設定第1列大標題
+            worksheet.cell(row=1, column=1, value=term_title)
+
+        excel_data = output.getvalue()
+
+        st.download_button(
+            label=f"📥 下載 {roc_year}年{sel_month}月 官方格式 Excel 月報表 (.xlsx)",
+            data=excel_data,
+            file_name=f"{term_title}_{sel_month}月.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary"
+        )
+
+    with tab2:
         col_input, _ = st.columns([2, 1])
         with col_input:
             custom_sheet = st.text_input(
-                "📌 指定 Google Sheet 分頁名稱 (若留空則預設讀取試算表第一頁)：", 
+                "📌 輸入 Google Sheet 標籤名稱 (若留空則預設讀取第一頁)：", 
                 value="",
-                placeholder="例如: 9月用藥 或 Sheet1"
+                placeholder="例如: Sheet1 或 9月"
             )
 
         target_sheet = custom_sheet.strip() if custom_sheet.strip() else None
@@ -360,53 +463,7 @@ elif menu == "🗓️ 用藥月報表與學期統計":
 
         if df_monthly_raw is not None and not df_monthly_raw.empty:
             display_name = target_sheet if target_sheet else "試算表預設第一頁"
-            st.success(f"✅ 成功載入【{display_name}】月報表完整原檔紀錄！")
+            st.success(f"✅ 成功載入【{display_name}】月報表紀錄！")
             st.dataframe(df_monthly_raw, use_container_width=True)
         else:
-            st.error(f"❌ 無法讀取指定的工作表「{target_sheet}」，請確認 Google Sheet 底下的分頁名稱標籤是否正確。")
-
-    with tab2:
-        if df_logs.empty or '領用數量' not in df_logs.columns:
-            st.info("目前尚無任何領用紀錄。")
-        else:
-            df_logs_calc = df_logs.copy()
-            df_logs_calc['日期_str'] = pd.to_datetime(df_logs_calc['日期'], errors='coerce').dt.strftime('%m/%d').str.lstrip('0').str.replace('/0', '/')
-            df_logs_calc['領用數量'] = pd.to_numeric(df_logs_calc['領用數量'], errors='coerce').fillna(0)
-
-            report_df = df_inventory[['藥品名稱', '批號', '有效日期', '現有庫存']].copy()
-            dates = sorted(df_logs_calc['日期_str'].dropna().unique().tolist())
-
-            for d in dates:
-                daily_quantities = []
-                for idx, row in report_df.iterrows():
-                    drug = row['藥品名稱']
-                    batch = str(row['批號']).strip()
-
-                    sub_logs = df_logs_calc[
-                        (df_logs_calc['藥品名稱'] == drug) & 
-                        (df_logs_calc['日期_str'] == d)
-                    ]
-
-                    if sub_logs.empty:
-                        qty = 0
-                    else:
-                        batch_matched = sub_logs[sub_logs['批號'].astype(str).str.strip() == batch]
-                        if not batch_matched.empty:
-                            qty = batch_matched['領用數量'].sum()
-                        else:
-                            unbatched = sub_logs[
-                                (sub_logs['批號'].astype(str).str.strip() == "") | 
-                                (sub_logs['批號'].isna())
-                            ]
-                            first_idx = report_df[report_df['藥品名稱'] == drug].index[0]
-                            if idx == first_idx:
-                                qty = unbatched['領用數量'].sum()
-                            else:
-                                qty = 0
-
-                    daily_quantities.append(int(qty))
-
-                report_df[d] = daily_quantities
-
-            report_df['當月使用總量'] = report_df[dates].sum(axis=1) if dates else 0
-            st.dataframe(report_df, use_container_width=True)
+            st.warning("未找到指定的 Google Sheet 工作表分頁。")
