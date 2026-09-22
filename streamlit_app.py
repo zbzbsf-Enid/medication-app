@@ -15,7 +15,7 @@ st.set_page_config(
 st.title("💊 國立臺北大學衛保組 藥品管理系統")
 
 # -----------------------------------------------------------------------------
-# 1. 雲端 Google Sheets 連線與智慧欄位對應讀取
+# 1. 雲端 Google Sheets 連線與智慧相容讀取 (保護歷史紀錄)
 # -----------------------------------------------------------------------------
 @st.cache_resource(ttl=60)
 def get_connection():
@@ -25,41 +25,43 @@ conn = get_connection()
 
 def load_data():
     try:
-        # 讀取『庫存』工作表
+        # 1. 讀取『庫存』工作表
         df_inventory = conn.read(worksheet="庫存", ttl=0)
         
-        # 讀取『領用紀錄』工作表 (若不存在則建立空表格)
-        try:
-            df_logs = conn.read(worksheet="領用紀錄", ttl=0)
-        except Exception:
+        # 2. 嘗試讀取各種可能名稱的『領用紀錄』工作表
+        df_logs = None
+        for log_sheet_name in ["領用紀錄", "用藥紀錄", "紀錄", "Logs"]:
+            try:
+                df_logs = conn.read(worksheet=log_sheet_name, ttl=0)
+                if df_logs is not None and not df_logs.empty:
+                    break
+            except Exception:
+                continue
+
+        if df_logs is None or df_logs.empty:
             df_logs = pd.DataFrame(columns=['日期', '藥品名稱', '批號', '領用數量', '備註'])
 
-        # 🚨 安全防護 1：若表格讀取為空，直接停止，保護雲端資料
+        # 🚨 安全防護：若庫存讀取為空，直接停止，保護雲端資料
         if df_inventory is None or df_inventory.empty:
             st.error("❌ 讀取『庫存』工作表失敗或資料為空，請檢查 Google Sheet 權限與工作表名稱！")
             st.stop()
 
-        # 💡 庫存表：欄位智慧自動對應 (解決標頭名稱不合問題)
+        # 💡 庫存表：欄位智慧自動對應
         col_map = {}
         for col in df_inventory.columns:
             c_str = str(col).strip()
             if any(k in c_str for k in ['藥品', '品名', '名稱']):
-                if '藥品名稱' not in col_map.values():
-                    col_map[col] = '藥品名稱'
+                if '藥品名稱' not in col_map.values(): col_map[col] = '藥品名稱'
             elif any(k in c_str for k in ['批號', '批次']):
-                if '批號' not in col_map.values():
-                    col_map[col] = '批號'
+                if '批號' not in col_map.values(): col_map[col] = '批號'
             elif any(k in c_str for k in ['效期', '有效日期', '有效期限', '到期日']):
-                if '有效日期' not in col_map.values():
-                    col_map[col] = '有效日期'
-            elif any(k in c_str for k in ['現有庫存', '目前庫存', '當前庫存', '剩餘量', '庫存']):
-                if '現有庫存' not in col_map.values():
-                    col_map[col] = '現有庫存'
+                if '有效日期' not in col_map.values(): col_map[col] = '有效日期'
+            elif any(k in c_str for k in ['現有庫存', '目前庫存', '當前庫存', '剩餘量', '庫存', '剩餘']):
+                if '現有庫存' not in col_map.values(): col_map[col] = '現有庫存'
 
-        # 執行庫存欄位更名
         df_inventory = df_inventory.rename(columns=col_map)
 
-        # 🚨 安全防護 2：檢查核心必要欄位
+        # 檢查必要欄位
         required_cols = ['藥品名稱', '批號', '現有庫存']
         missing = [c for c in required_cols if c not in df_inventory.columns]
         if missing:
@@ -67,11 +69,9 @@ def load_data():
             st.info(f"📋 目前讀取到的原始欄位標頭為：{list(df_inventory.columns)}")
             st.stop()
 
-        # 若未提供效期欄位，預設為未來遠期日期
         if '有效日期' not in df_inventory.columns:
             df_inventory['有效日期'] = '2099-12-31'
 
-        # 格式轉型
         df_inventory['現有庫存'] = pd.to_numeric(df_inventory['現有庫存'], errors='coerce').fillna(0).astype(int)
 
         # 💡 領用紀錄表：欄位智慧對應
@@ -79,17 +79,20 @@ def load_data():
             log_col_map = {}
             for col in df_logs.columns:
                 c_str = str(col).strip()
-                if any(k in c_str for k in ['日期', '時間']):
+                if any(k in c_str for k in ['日期', '時間', 'Date']):
                     if '日期' not in log_col_map.values(): log_col_map[col] = '日期'
                 elif any(k in c_str for k in ['藥品', '品名', '名稱']):
                     if '藥品名稱' not in log_col_map.values(): log_col_map[col] = '藥品名稱'
                 elif any(k in c_str for k in ['批號', '批次']):
                     if '批號' not in log_col_map.values(): log_col_map[col] = '批號'
-                elif any(k in c_str for k in ['數量', '領用']):
+                elif any(k in c_str for k in ['數量', '領用', '扣減']):
                     if '領用數量' not in log_col_map.values(): log_col_map[col] = '領用數量'
                 elif any(k in c_str for k in ['備註', '說明']):
                     if '備註' not in log_col_map.values(): log_col_map[col] = '備註'
             df_logs = df_logs.rename(columns=log_col_map)
+            
+            if '批號' not in df_logs.columns:
+                df_logs['批號'] = ""
         
         return df_inventory, df_logs
 
@@ -103,26 +106,19 @@ df_inventory, df_logs = load_data()
 # 2. 先進先出 (FIFO) 庫存扣減邏輯
 # -----------------------------------------------------------------------------
 def deduct_inventory_fifo(inventory_df, drug_name, req_qty, log_date, note=""):
-    """
-    先進先出 (FIFO)：優先扣除「有效日期」最早的庫存
-    """
     df_inv = inventory_df.copy()
-    
-    # 1. 搜尋該藥品且庫存 > 0 的批號
     mask = (df_inv['藥品名稱'] == drug_name) & (df_inv['現有庫存'] > 0)
     available = df_inv[mask].copy()
 
     if available.empty:
         return df_inv, [], f"❌ {drug_name} 目前已無可用庫存！"
 
-    # 2. 按「有效日期」舊到新排序 (舊效期先扣)
     available['exp_dt'] = pd.to_datetime(available['有效日期'], errors='coerce')
     available = available.sort_values(by='exp_dt', ascending=True)
 
     remaining_qty = req_qty
     new_logs = []
 
-    # 3. 逐筆扣除庫存
     for idx in available.index:
         if remaining_qty <= 0:
             break
@@ -139,7 +135,6 @@ def deduct_inventory_fifo(inventory_df, drug_name, req_qty, log_date, note=""):
             deducted = current_stock
             remaining_qty -= current_stock
 
-        # 紀錄扣除的批號與數量
         new_logs.append({
             '日期': str(log_date),
             '藥品名稱': drug_name,
@@ -155,7 +150,7 @@ def deduct_inventory_fifo(inventory_df, drug_name, req_qty, log_date, note=""):
     return df_inv, new_logs, status_msg
 
 # -----------------------------------------------------------------------------
-# 3. 側邊欄與功能頁面導覽
+# 3. 側邊欄與完整功能選單 (5大功能頁面)
 # -----------------------------------------------------------------------------
 st.sidebar.title("📌 功能選單")
 
@@ -165,11 +160,17 @@ if st.sidebar.button("🔄 手動刷新雲端資料"):
 
 menu = st.sidebar.radio(
     "請選擇功能頁面",
-    ["📋 多項藥品領用登記", "📊 當前庫存總覽", "🗓️ 用藥月報表與統計"]
+    [
+        "📋 多項藥品領用登記",
+        "🏥 藥品進貨/建檔登記",
+        "🛠️ 紀錄修改與庫存微調",
+        "📊 當前庫存總覽",
+        "🗓️ 用藥月報表與學期統計"
+    ]
 )
 
 # -----------------------------------------------------------------------------
-# 功能頁面 1：多項藥品領用登記 (FIFO 自動扣舊庫存)
+# 頁面 1：多項藥品領用登記
 # -----------------------------------------------------------------------------
 if menu == "📋 多項藥品領用登記":
     st.header("📋 批量藥品領用登記")
@@ -180,7 +181,6 @@ if menu == "📋 多項藥品領用登記":
     with col2:
         note = st.text_input("領用備註", value="無")
 
-    # 去重後的藥品選單
     drug_list = sorted(df_inventory['藥品名稱'].dropna().unique().tolist())
     selected_drugs = st.multiselect("請選擇欲領用的藥品名稱", options=drug_list)
 
@@ -206,7 +206,6 @@ if menu == "📋 多項藥品領用登記":
             all_new_logs = []
             warning_messages = []
 
-            # 執行 FIFO 庫存扣減
             for drug, req_qty in qty_dict.items():
                 updated_inv, logs, msg = deduct_inventory_fifo(
                     updated_inv, drug, req_qty, log_date, note
@@ -222,65 +221,170 @@ if menu == "📋 多項藥品領用登記":
 
             if all_new_logs:
                 try:
-                    # 1. 更新『庫存』工作表
                     conn.update(worksheet="庫存", data=updated_inv)
-
-                    # 2. 追加至『領用紀錄』工作表
                     logs_df_new = pd.concat([df_logs, pd.DataFrame(all_new_logs)], ignore_index=True)
                     conn.update(worksheet="領用紀錄", data=logs_df_new)
 
-                    st.success("✅ 庫存更新成功！已精準按效期順序扣除舊庫存並同步至雲端。")
+                    st.success("✅ 庫存更新成功！已按效期順序扣除舊庫存並同步至雲端。")
                     st.cache_resource.clear()
                     st.rerun()
-
                 except Exception as e:
-                    st.error(f"❌ 庫存更新失敗：{e}")
+                    st.error(f"❌ 寫入雲端失敗：{e}")
 
 # -----------------------------------------------------------------------------
-# 功能頁面 2：當前庫存總覽
+# 頁面 2：藥品進貨/建檔登記 (新增進貨/新藥品)
+# -----------------------------------------------------------------------------
+elif menu == "🏥 藥品進貨/建檔登記":
+    st.header("🏥 藥品進貨與建檔登記")
+
+    entry_type = st.radio("請選擇操作類型", ["既存藥品進貨 (加庫存/新批號)", "新增全新藥品品項"])
+
+    if entry_type == "既存藥品進貨 (加庫存/新批號)":
+        drug_list = sorted(df_inventory['藥品名稱'].dropna().unique().tolist())
+        selected_drug = st.selectbox("選擇藥品名稱", options=drug_list)
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            batch_no = st.text_input("進貨批號")
+        with col2:
+            exp_date = st.date_input("有效日期")
+        with col3:
+            add_qty = st.number_input("進貨數量", min_value=1, value=100)
+
+        if st.button("提交進貨紀錄", type="primary"):
+            if not batch_no:
+                st.warning("請填寫批號！")
+            else:
+                updated_inv = df_inventory.copy()
+                # 檢查是否已有相同藥名與批號
+                mask = (updated_inv['藥品名稱'] == selected_drug) & (updated_inv['批號'].astype(str) == str(batch_no))
+                if mask.any():
+                    updated_inv.loc[mask, '現有庫存'] += add_qty
+                    updated_inv.loc[mask, '有效日期'] = str(exp_date)
+                else:
+                    new_row = {col: "" for col in updated_inv.columns}
+                    new_row['藥品名稱'] = selected_drug
+                    new_row['批號'] = str(batch_no)
+                    new_row['有效日期'] = str(exp_date)
+                    new_row['現有庫存'] = add_qty
+                    updated_inv = pd.concat([updated_inv, pd.DataFrame([new_row])], ignore_index=True)
+
+                try:
+                    conn.update(worksheet="庫存", data=updated_inv)
+                    st.success(f"✅ 已成功為 {selected_drug} 新增庫存 {add_qty} 顆！")
+                    st.cache_resource.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ 寫入失敗：{e}")
+
+    else: # 新增全新藥品品項
+        col1, col2 = st.columns(2)
+        with col1:
+            new_drug_name = st.text_input("全新藥品名稱 (商品名/中文)")
+            new_batch = st.text_input("批號")
+        with col2:
+            new_exp = st.date_input("有效日期")
+            new_qty = st.number_input("初始庫存數量", min_value=1, value=100)
+
+        if st.button("建立新藥品品項", type="primary"):
+            if not new_drug_name or not new_batch:
+                st.warning("請輸入藥品名稱與批號！")
+            else:
+                updated_inv = df_inventory.copy()
+                new_row = {col: "" for col in updated_inv.columns}
+                new_row['藥品名稱'] = new_drug_name
+                new_row['批號'] = str(new_batch)
+                new_row['有效日期'] = str(new_exp)
+                new_row['現有庫存'] = new_qty
+                updated_inv = pd.concat([updated_inv, pd.DataFrame([new_row])], ignore_index=True)
+
+                try:
+                    conn.update(worksheet="庫存", data=updated_inv)
+                    st.success(f"✅ 已建立新藥品 {new_drug_name}！")
+                    st.cache_resource.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ 寫入失敗：{e}")
+
+# -----------------------------------------------------------------------------
+# 頁面 3：紀錄修改與庫存微調
+# -----------------------------------------------------------------------------
+elif menu == "🛠️ 紀錄修改與庫存微調":
+    st.header("🛠️ 庫存數量手動微調")
+    st.info("💡 在此頁面可以直接修正盤點後的庫存數量。")
+
+    edited_inv = st.data_editor(df_inventory, use_container_width=True, num_rows="dynamic")
+
+    if st.button("儲存庫存微調變更", type="primary"):
+        try:
+            conn.update(worksheet="庫存", data=edited_inv)
+            st.success("✅ 庫存資料微調成功並同步至 Google Sheet！")
+            st.cache_resource.clear()
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ 儲存失敗：{e}")
+
+# -----------------------------------------------------------------------------
+# 頁面 4：當前庫存總覽
 # -----------------------------------------------------------------------------
 elif menu == "📊 當前庫存總覽":
     st.header("📊 當前庫存總覽")
     st.dataframe(df_inventory, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# 功能頁面 3：用藥月報表與統計 (按 [藥名 + 批號] 精準統計)
+# 頁面 5：用藥月報表與學期統計 (完整保留與支援過往歷史紀錄)
 # -----------------------------------------------------------------------------
-elif menu == "🗓️ 用藥月報表與統計":
+elif menu == "🗓️ 用藥月報表與學期統計":
     st.header("🗓️ 用藥月報表與學期統計")
 
     if df_logs.empty or '領用數量' not in df_logs.columns:
         st.info("目前尚無任何領用紀錄。")
     else:
-        # 資料預處理
         df_logs_calc = df_logs.copy()
         df_logs_calc['日期_str'] = pd.to_datetime(df_logs_calc['日期'], errors='coerce').dt.strftime('%Y-%m-%d')
         df_logs_calc['領用數量'] = pd.to_numeric(df_logs_calc['領用數量'], errors='coerce').fillna(0)
 
-        # 報表基礎欄位
+        # 基礎報表
         report_df = df_inventory[['藥品名稱', '批號', '有效日期', '現有庫存']].copy()
-        
-        # 取得所有有領用紀錄的日期
         dates = sorted(df_logs_calc['日期_str'].dropna().unique().tolist())
 
-        # 🟢 精準統計：每一列依據 [藥品名稱] 與 [批號] 進行雙重條件計算
+        # 🟢 智慧歷史相容比對：若舊 Log 缺少批號，則自動按藥名比對，確保 9/1~9/21 舊資料不遺失
         for d in dates:
             daily_quantities = []
             for _, row in report_df.iterrows():
                 drug = row['藥品名稱']
                 batch = str(row['批號']).strip()
 
-                mask = (
+                # 當日該藥名的 Log 集合
+                sub_logs = df_logs_calc[
                     (df_logs_calc['藥品名稱'] == drug) & 
-                    (df_logs_calc['批號'].astype(str).str.strip() == batch) & 
                     (df_logs_calc['日期_str'] == d)
-                )
-                qty = df_logs_calc[mask]['領用數量'].sum()
+                ]
+
+                if sub_logs.empty:
+                    qty = 0
+                else:
+                    # 檢查 Log 中是否有精準包含批號的紀錄
+                    batch_matched = sub_logs[sub_logs['批號'].astype(str).str.strip() == batch]
+                    if not batch_matched.empty:
+                        qty = batch_matched['領用數量'].sum()
+                    else:
+                        # 舊紀錄防護：若 Log 中完全沒有記錄批號(空值)，則顯示在該藥品的第一個批號上
+                        unbatched = sub_logs[
+                            (sub_logs['批號'].astype(str).str.strip() == "") | 
+                            (sub_logs['批號'].isna())
+                        ]
+                        # 找到庫存表裡該藥品的第一列 index，避免重複歸入
+                        first_idx_of_drug = report_df[report_df['藥品名稱'] == drug].index[0]
+                        if row.name == first_idx_of_drug:
+                            qty = unbatched['領用數量'].sum()
+                        else:
+                            qty = 0
+
                 daily_quantities.append(int(qty))
 
             report_df[d] = daily_quantities
 
-        # 計算累計總量
         report_df['當月使用總量'] = report_df[dates].sum(axis=1) if dates else 0
 
         st.dataframe(report_df, use_container_width=True)
