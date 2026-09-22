@@ -15,20 +15,34 @@ st.set_page_config(
 st.title("💊 國立臺北大學衛保組 藥品管理系統")
 
 # -----------------------------------------------------------------------------
-# 1. 雲端 Google Sheets 連線與雙軌資料讀取 (防 429 限流 & 100% 保護歷史紀錄)
+# 1. 雲端 Google Sheets 連線與智慧全分頁掃描 (解決工作表名稱不一致問題)
 # -----------------------------------------------------------------------------
 def get_connection():
     return st.connection("gsheets", type=GSheetsConnection)
 
 conn = get_connection()
 
-@st.cache_data(ttl=60, show_spinner="讀取雲端資料中...")
-def load_all_sheets():
+@st.cache_data(ttl=60, show_spinner="讀取雲端資料庫中...")
+def load_base_data():
+    """讀取庫存與領用紀錄流水帳"""
     try:
-        # 1. 讀取『庫存』工作表
-        df_inventory = conn.read(worksheet="庫存", ttl=60)
-        
-        # 2. 讀取『領用紀錄』(流水帳格式)
+        # 1. 嘗試讀取『庫存』工作表，若無則讀取預設第一頁
+        df_inventory = None
+        for inv_name in ["庫存", "Sheet1", "工作表1", None]:
+            try:
+                if inv_name:
+                    tmp = conn.read(worksheet=inv_name, ttl=60)
+                else:
+                    tmp = conn.read(ttl=60)
+                if tmp is not None and not tmp.empty:
+                    cols_str = " ".join([str(c) for c in tmp.columns])
+                    if any(k in cols_str for k in ['藥品', '品名', '名稱', '現有庫存', '剩餘量']):
+                        df_inventory = tmp
+                        break
+            except Exception:
+                continue
+
+        # 2. 嘗試讀取『領用紀錄』流水帳
         df_logs = None
         for log_name in ["領用紀錄", "用藥紀錄", "紀錄", "Logs"]:
             try:
@@ -40,17 +54,7 @@ def load_all_sheets():
         if df_logs is None or df_logs.empty:
             df_logs = pd.DataFrame(columns=['日期', '藥品名稱', '批號', '領用數量', '備註'])
 
-        # 3. 讀取現有『用藥月報表』(矩陣橫向格式，即含有 9/1~9/30 欄位之工作表)
-        df_monthly = None
-        for m_name in ["用藥月報表", "月報表", "9月", "9月月報表", "用藥月報表與學期統計"]:
-            try:
-                df_monthly = conn.read(worksheet=m_name, ttl=60)
-                if df_monthly is not None and not df_monthly.empty:
-                    break
-            except Exception:
-                continue
-
-        # --- 欄位整理：庫存表 ---
+        # 欄位標準化：庫存表
         if df_inventory is not None and not df_inventory.empty:
             col_map = {}
             for col in df_inventory.columns:
@@ -65,13 +69,12 @@ def load_all_sheets():
                     if '現有庫存' not in col_map.values(): col_map[col] = '現有庫存'
 
             df_inventory = df_inventory.rename(columns=col_map)
-
             if '有效日期' not in df_inventory.columns:
                 df_inventory['有效日期'] = '2099-12-31'
             if '現有庫存' in df_inventory.columns:
                 df_inventory['現有庫存'] = pd.to_numeric(df_inventory['現有庫存'], errors='coerce').fillna(0).astype(int)
 
-        # --- 欄位整理：領用紀錄表 ---
+        # 欄位標準化：領用紀錄表
         if df_logs is not None and not df_logs.empty:
             log_col_map = {}
             for col in df_logs.columns:
@@ -90,13 +93,36 @@ def load_all_sheets():
             if '批號' not in df_logs.columns:
                 df_logs['批號'] = ""
 
-        return df_inventory, df_logs, df_monthly
-
+        return df_inventory, df_logs
     except Exception as e:
-        st.error(f"❌ 讀取資料失敗：{e}")
+        st.error(f"❌ 讀取雲端資料失敗：{e}")
         st.stop()
 
-df_inventory, df_logs, df_monthly = load_all_sheets()
+@st.cache_data(ttl=60, show_spinner="自動掃描歷史月報表中...")
+def auto_find_monthly_sheet():
+    """自動尋找包含 9/7~9/22 歷史紀錄矩陣表"""
+    candidates = [
+        None, "Sheet1", "工作表1", "用藥月報表", "月報表", "9月", "9月月報表", 
+        "用藥紀錄", "9月用藥", "用藥月報表與學期統計", "Sheet2", "工作表2"
+    ]
+    for name in candidates:
+        try:
+            if name is None:
+                df = conn.read(ttl=60)
+            else:
+                df = conn.read(worksheet=name, ttl=60)
+            
+            if df is not None and not df.empty:
+                cols_str = " ".join([str(c) for c in df.columns])
+                # 若包含日期格式或月報表標誌欄位
+                if any(k in cols_str for k in ['9/7', '9/1', '9/10', '9/15', '9/22', '當月使用', '剩餘量', '8月']):
+                    return df, name if name else "試算表第一頁 (預設)"
+        except Exception:
+            continue
+    return None, None
+
+df_inventory, df_logs = load_base_data()
+df_monthly_auto, matched_sheet_name = auto_find_monthly_sheet()
 
 # -----------------------------------------------------------------------------
 # 2. 先進先出 (FIFO) 庫存扣減邏輯
@@ -218,42 +244,9 @@ if menu == "📋 多項藥品領用登記":
 
             if all_new_logs:
                 try:
-                    # 1. 更新『庫存』工作表
                     conn.update(worksheet="庫存", data=updated_inv)
-
-                    # 2. 更新『領用紀錄』流水帳工作表
                     logs_df_new = pd.concat([df_logs, pd.DataFrame(all_new_logs)], ignore_index=True)
                     conn.update(worksheet="領用紀錄", data=logs_df_new)
-
-                    # 3. 同步更新雲端『用藥月報表』矩陣工作表（若存在）
-                    if df_monthly is not None and not df_monthly.empty:
-                        m_df_updated = df_monthly.copy()
-                        date_col_name = f"{log_date.month}/{log_date.day}"
-                        drug_col_in_m = m_df_updated.columns[0]
-
-                        if date_col_name in m_df_updated.columns:
-                            for log_item in all_new_logs:
-                                drug_n = log_item['藥品名稱']
-                                batch_n = str(log_item['批號']).strip()
-                                qty_ded = log_item['領用數量']
-
-                                m_mask = (m_df_updated[drug_col_in_m] == drug_n)
-                                if '批號' in m_df_updated.columns and batch_n:
-                                    m_mask = m_mask & (m_df_updated['批號'].astype(str).str.strip() == batch_n)
-
-                                matched_indices = m_df_updated[m_mask].index
-                                if len(matched_indices) > 0:
-                                    target_idx = matched_indices[0]
-                                    curr_val = pd.to_numeric(m_df_updated.loc[target_idx, date_col_name], errors='coerce')
-                                    curr_val = 0 if pd.isna(curr_val) else curr_val
-                                    m_df_updated.loc[target_idx, date_col_name] = curr_val + qty_ded
-
-                            for m_name in ["用藥月報表", "月報表", "9月", "9月月報表", "用藥月報表與學期統計"]:
-                                try:
-                                    conn.update(worksheet=m_name, data=m_df_updated)
-                                    break
-                                except Exception:
-                                    continue
 
                     st.success("✅ 庫存與領用紀錄更新成功！已同步至雲端。")
                     st.cache_data.clear()
@@ -339,7 +332,7 @@ elif menu == "🏥 藥品進貨/建檔登記":
 # 頁面 3：紀錄修改與庫存微調
 # -----------------------------------------------------------------------------
 elif menu == "🛠️ 紀錄修改與庫存微調":
-    st.header("🛠️ 庫存數量與紀錄手動微調")
+    st.header("🛠️ 庫存數量手動微調")
     st.info("💡 在此頁面可以直接修正盤點後的庫存數量。")
 
     edited_inv = st.data_editor(df_inventory, use_container_width=True, num_rows="dynamic")
@@ -361,7 +354,7 @@ elif menu == "📊 當前庫存總覽":
     st.dataframe(df_inventory, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# 頁面 5：用藥月報表與學期統計 (雙軌顯示：原檔直讀 + 動態對應)
+# 頁面 5：用藥月報表與學期統計
 # -----------------------------------------------------------------------------
 elif menu == "🗓️ 用藥月報表與學期統計":
     st.header("🗓️ 用藥月報表與學期統計")
@@ -369,15 +362,28 @@ elif menu == "🗓️ 用藥月報表與學期統計":
     tab1, tab2 = st.tabs(["📄 雲端月報表 (試算表原檔)", "🔄 智慧動態報表 (依交易紀錄計算)"])
 
     with tab1:
-        if df_monthly is not None and not df_monthly.empty:
-            st.success("✅ 已直接讀取雲端「用藥月報表」完整歷史紀錄 (含 9/7 ~ 9/22 等紀錄)。")
-            st.dataframe(df_monthly, use_container_width=True)
-        else:
-            st.warning("⚠️ 未在雲端找到名稱為『用藥月報表』或『月報表』的矩陣工作表。請確認 Google Sheet 中該工作頁面的標題名稱。")
+        # 手動指定分頁名稱輸入框 (防護機制)
+        with st.expander("🔍 如果自動載入的分頁不正確，請點此輸入您的 Google Sheet 分頁標籤名稱"):
+            custom_sheet = st.text_input("請輸入 Google Sheet 下方的分頁標籤名稱 (例如: Sheet1 或 9月用藥)", value="")
+            if custom_sheet:
+                try:
+                    df_custom = conn.read(worksheet=custom_sheet, ttl=60)
+                    st.success(f"✅ 成功載入『{custom_sheet}』工作表資料！")
+                    st.dataframe(df_custom, use_container_width=True)
+                except Exception as e:
+                    st.error(f"❌ 無法讀取『{custom_sheet}』工作表：{e}")
+
+        # 若使用者沒有手動輸入，則顯示自動掃描結果
+        if not custom_sheet:
+            if df_monthly_auto is not None:
+                st.success(f"✅ 已自動識別並載入工作表：【{matched_sheet_name}】(含 9/7 ~ 9/22 歷史紀錄)")
+                st.dataframe(df_monthly_auto, use_container_width=True)
+            else:
+                st.warning("⚠️ 未能自動辨識月報表分頁。請點擊上方搜尋欄，輸入您 Google Sheet 底下的分頁標籤名稱 (例如: Sheet1、工作表1 或 9月用藥)。")
 
     with tab2:
         if df_logs.empty or '領用數量' not in df_logs.columns:
-            st.info("目前尚無任何流水帳領用紀錄。")
+            st.info("目前尚無任何領用紀錄。")
         else:
             df_logs_calc = df_logs.copy()
             df_logs_calc['日期_str'] = pd.to_datetime(df_logs_calc['日期'], errors='coerce').dt.strftime('%m/%d').str.lstrip('0').str.replace('/0', '/')
