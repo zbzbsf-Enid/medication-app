@@ -21,11 +21,13 @@ except Exception as e:
     st.error(f"❌ 初始化 GSheetsConnection 失敗，請確認 secrets.toml 設定: {e}")
     st.stop()
 
-# 取得原生 gspread Spreadsheet 物件 (避開 API 快取問題)
+# 取得原生 gspread Spreadsheet 物件 (解包 GSheetsServiceAccountClient)
 def get_spreadsheet():
     try:
         url = st.secrets["connections"]["gsheets"]["spreadsheet"]
-        return conn.client.open_by_url(url)
+        # 取得底層原生 gspread 客戶端
+        client = getattr(conn.client, "_client", conn.client)
+        return client.open_by_url(url)
     except Exception as e:
         st.error(f"❌ 開啟雲端試算表失敗: {e}")
         return None
@@ -105,7 +107,6 @@ with tab1:
     inventory_df = load_sheet_data("庫存")
     
     if not inventory_df.empty:
-        # 關鍵字搜尋功能
         search_kw = st.text_input("🔍 搜尋藥品（英文或中文名稱）：", "")
         if search_kw:
             filtered_df = inventory_df[
@@ -130,7 +131,6 @@ with tab2:
         with st.form("usage_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
             
-            # 選項格式：藥品英文 (中文)
             med_options = inventory_df.apply(
                 lambda row: f"{row.get('藥品名稱', '')} ({row.get('中文名稱', '')})", axis=1
             ).tolist()
@@ -144,13 +144,12 @@ with tab2:
             submit_btn = st.form_submit_button("確認無誤，寫入雲端並更新庫存", use_container_width=True)
             
             if submit_btn:
-                # 解析選取的藥品資料
                 idx = med_options.index(selected_med_str)
                 selected_row = inventory_df.iloc[idx]
                 med_name = selected_row.get("藥品名稱", "")
                 zh_name = selected_row.get("中文名稱", "")
                 
-                # 1. 新增至「領用紀錄」分頁
+                # 1. 寫入「領用紀錄」
                 usage_df = load_sheet_data("領用紀錄")
                 new_usage_row = pd.DataFrame([{
                     "領用時間": str(use_date),
@@ -162,14 +161,13 @@ with tab2:
                 
                 updated_usage_df = pd.concat([usage_df, new_usage_row], ignore_index=True)
                 
-                # 寫入領用紀錄 (若不存在自動建立)
                 success_usage, msg1 = safe_update_sheet(
                     "領用紀錄", 
                     updated_usage_df, 
                     default_headers=["領用時間", "藥品名稱", "中文名稱", "領用數量", "備註"]
                 )
                 
-                # 2. 同步扣減「庫存」分頁中的剩餘庫存
+                # 2. 更新「庫存」
                 if success_usage:
                     curr_qty = pd.to_numeric(inventory_df.at[idx, "剩餘庫存"], errors='coerce')
                     curr_qty = 0 if pd.isna(curr_qty) else int(curr_qty)
@@ -217,7 +215,6 @@ with tab3:
             if not med_name:
                 st.error("請輸入藥品名稱！")
             else:
-                # 1. 新增至「進貨紀錄」
                 restock_df = load_sheet_data("進貨紀錄")
                 new_restock_row = pd.DataFrame([{
                     "進貨時間": str(restock_date),
@@ -234,7 +231,6 @@ with tab3:
                     default_headers=["進貨時間", "藥品名稱", "中文名稱", "進貨數量", "備註"]
                 )
                 
-                # 2. 增加庫存數量
                 if success_restock:
                     if not inventory_df.empty and med_name in inventory_df["藥品名稱"].values:
                         idx = inventory_df[inventory_df["藥品名稱"] == med_name].index[0]
