@@ -24,85 +24,93 @@ def get_connection():
 
 conn = get_connection()
 
+# 側邊欄設定分頁名稱
+st.sidebar.title("📌 功能與雲端設定")
+
+with st.sidebar.expander("⚙️ Google Sheet 分頁名稱設定", expanded=False):
+    custom_inv_name = st.text_input("庫存分頁名稱", value="庫存")
+    custom_log_name = st.text_input("領用紀錄分頁名稱", value="領用紀錄")
+
+if st.sidebar.button("🔄 手動刷新雲端資料"):
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    st.rerun()
+
 @st.cache_data(ttl=60, show_spinner="讀取雲端資料庫中...")
-def load_base_data():
-    """讀取庫存與領用紀錄流水帳，並自動記錄真實分頁名稱"""
+def load_base_data(target_inv_name, target_log_name):
+    """讀取庫存與領用紀錄流水帳"""
     df_inventory = None
     df_logs = None
-    inv_sheet_name = "庫存"
-    log_sheet_name = "領用紀錄"
+    inv_sheet_name = target_inv_name
+    log_sheet_name = target_log_name
 
-    try:
-        # 1. 偵測並讀取『庫存』工作表
-        for inv_name in ["庫存", "Sheet1", "工作表1", "Inventory", None]:
-            try:
-                tmp = conn.read(worksheet=inv_name, ttl=60) if inv_name else conn.read(ttl=60)
-                if tmp is not None and not tmp.empty:
-                    cols_str = " ".join([str(c) for c in tmp.columns])
-                    if any(k in cols_str for k in ['藥品', '品名', '名稱', '現有庫存', '剩餘量']):
-                        df_inventory = tmp
-                        inv_sheet_name = inv_name if inv_name else "Sheet1"
-                        break
-            except Exception:
-                continue
-
-        # 2. 偵測並讀取『領用紀錄』流水帳
-        for log_name in ["領用紀錄", "Sheet2", "工作表2", "用藥紀錄", "紀錄", "Logs"]:
-            try:
-                tmp_log = conn.read(worksheet=log_name, ttl=60)
-                if tmp_log is not None and not tmp_log.empty:
-                    df_logs = tmp_log
-                    log_sheet_name = log_name
+    # 1. 偵測並讀取『庫存』工作表
+    for inv_name in [target_inv_name, "庫存", "Sheet1", "工作表1", "Inventory", None]:
+        try:
+            tmp = conn.read(worksheet=inv_name, ttl=60) if inv_name else conn.read(ttl=60)
+            if tmp is not None and not tmp.empty:
+                cols_str = " ".join([str(c) for c in tmp.columns])
+                if any(k in cols_str for k in ['藥品', '品名', '名稱', '現有庫存', '剩餘量']):
+                    df_inventory = tmp
+                    inv_sheet_name = inv_name if inv_name else "Sheet1"
                     break
-            except Exception:
-                continue
+        except Exception:
+            continue
 
-        if df_logs is None or df_logs.empty:
-            df_logs = pd.DataFrame(columns=['日期', '藥品名稱', '批號', '領用數量', '備註'])
+    # 2. 偵測並讀取『領用紀錄』流水帳
+    for log_name in [target_log_name, "領用紀錄", "Sheet2", "工作表2", "用藥紀錄", "紀錄", "Logs"]:
+        try:
+            tmp_log = conn.read(worksheet=log_name, ttl=60)
+            if tmp_log is not None and not tmp_log.empty:
+                df_logs = tmp_log
+                log_sheet_name = log_name
+                break
+        except Exception:
+            continue
 
-        # 庫存表欄位標準化
-        if df_inventory is not None and not df_inventory.empty:
-            col_map = {}
-            for col in df_inventory.columns:
-                c_str = str(col).strip()
-                if any(k in c_str for k in ['藥品', '品名', '名稱']):
-                    if '藥品名稱' not in col_map.values(): col_map[col] = '藥品名稱'
-                elif any(k in c_str for k in ['批號', '批次']):
-                    if '批號' not in col_map.values(): col_map[col] = '批號'
-                elif any(k in c_str for k in ['效期', '有效日期', '有效期限', '到期日']):
-                    if '有效日期' not in col_map.values(): col_map[col] = '有效日期'
-                elif any(k in c_str for k in ['現有庫存', '目前庫存', '當前庫存', '剩餘量', '庫存', '剩餘']):
-                    if '現有庫存' not in col_map.values(): col_map[col] = '現有庫存'
+    if df_logs is None or df_logs.empty:
+        df_logs = pd.DataFrame(columns=['日期', '藥品名稱', '批號', '領用數量', '備註'])
 
-            df_inventory = df_inventory.rename(columns=col_map)
-            if '有效日期' not in df_inventory.columns:
-                df_inventory['有效日期'] = '2099-12-31'
-            if '現有庫存' in df_inventory.columns:
-                df_inventory['現有庫存'] = pd.to_numeric(df_inventory['現有庫存'], errors='coerce').fillna(0).astype(int)
+    # 庫存表欄位標準化
+    if df_inventory is not None and not df_inventory.empty:
+        col_map = {}
+        for col in df_inventory.columns:
+            c_str = str(col).strip()
+            if any(k in c_str for k in ['藥品', '品名', '名稱']):
+                if '藥品名稱' not in col_map.values(): col_map[col] = '藥品名稱'
+            elif any(k in c_str for k in ['批號', '批次']):
+                if '批號' not in col_map.values(): col_map[col] = '批號'
+            elif any(k in c_str for k in ['效期', '有效日期', '有效期限', '到期日']):
+                if '有效日期' not in col_map.values(): col_map[col] = '有效日期'
+            elif any(k in c_str for k in ['現有庫存', '目前庫存', '當前庫存', '剩餘量', '庫存', '剩餘']):
+                if '現有庫存' not in col_map.values(): col_map[col] = '現有庫存'
 
-        # 領用紀錄表欄位標準化
-        if df_logs is not None and not df_logs.empty:
-            log_col_map = {}
-            for col in df_logs.columns:
-                c_str = str(col).strip()
-                if any(k in c_str for k in ['日期', '時間', 'Date']):
-                    if '日期' not in log_col_map.values(): log_col_map[col] = '日期'
-                elif any(k in c_str for k in ['藥品', '品名', '名稱']):
-                    if '藥品名稱' not in log_col_map.values(): log_col_map[col] = '藥品名稱'
-                elif any(k in c_str for k in ['批號', '批次']):
-                    if '批號' not in log_col_map.values(): log_col_map[col] = '批號'
-                elif any(k in c_str for k in ['數量', '領用', '扣減']):
-                    if '領用數量' not in log_col_map.values(): log_col_map[col] = '領用數量'
-                elif any(k in c_str for k in ['備註', '說明']):
-                    if '備註' not in log_col_map.values(): log_col_map[col] = '備註'
-            df_logs = df_logs.rename(columns=log_col_map)
-            if '批號' not in df_logs.columns:
-                df_logs['批號'] = ""
+        df_inventory = df_inventory.rename(columns=col_map)
+        if '有效日期' not in df_inventory.columns:
+            df_inventory['有效日期'] = '2099-12-31'
+        if '現有庫存' in df_inventory.columns:
+            df_inventory['現有庫存'] = pd.to_numeric(df_inventory['現有庫存'], errors='coerce').fillna(0).astype(int)
 
-        return df_inventory, df_logs, inv_sheet_name, log_sheet_name
-    except Exception as e:
-        st.error(f"❌ 讀取雲端資料失敗：{e}")
-        st.stop()
+    # 領用紀錄表欄位標準化
+    if df_logs is not None and not df_logs.empty:
+        log_col_map = {}
+        for col in df_logs.columns:
+            c_str = str(col).strip()
+            if any(k in c_str for k in ['日期', '時間', 'Date']):
+                if '日期' not in log_col_map.values(): log_col_map[col] = '日期'
+            elif any(k in c_str for k in ['藥品', '品名', '名稱']):
+                if '藥品名稱' not in log_col_map.values(): log_col_map[col] = '藥品名稱'
+            elif any(k in c_str for k in ['批號', '批次']):
+                if '批號' not in log_col_map.values(): log_col_map[col] = '批號'
+            elif any(k in c_str for k in ['數量', '領用', '扣減']):
+                if '領用數量' not in log_col_map.values(): log_col_map[col] = '領用數量'
+            elif any(k in c_str for k in ['備註', '說明']):
+                if '備註' not in log_col_map.values(): log_col_map[col] = '備註'
+        df_logs = df_logs.rename(columns=log_col_map)
+        if '批號' not in df_logs.columns:
+            df_logs['批號'] = ""
+
+    return df_inventory, df_logs, inv_sheet_name, log_sheet_name
 
 @st.cache_data(ttl=60, show_spinner="讀取試算表原檔中...")
 def load_raw_monthly_sheet(sheet_name=None):
@@ -116,7 +124,7 @@ def load_raw_monthly_sheet(sheet_name=None):
     except Exception:
         return None
 
-df_inventory, df_logs, inv_sheet_name, log_sheet_name = load_base_data()
+df_inventory, df_logs, inv_sheet_name, log_sheet_name = load_base_data(custom_inv_name, custom_log_name)
 
 # 安全寫入輔助函式
 def safe_update_sheet(worksheet_target, data_df):
@@ -178,15 +186,8 @@ def deduct_inventory_fifo(inventory_df, drug_name, req_qty, log_date, note=""):
     return df_inv, new_logs, status_msg
 
 # -----------------------------------------------------------------------------
-# 3. 側邊欄與功能選單
+# 3. 頁面選單
 # -----------------------------------------------------------------------------
-st.sidebar.title("📌 功能選單")
-
-if st.sidebar.button("🔄 手動刷新雲端資料"):
-    st.cache_data.clear()
-    st.cache_resource.clear()
-    st.rerun()
-
 menu = st.sidebar.radio(
     "請選擇功能頁面",
     [
@@ -261,11 +262,21 @@ if menu == "📋 多項藥品領用登記":
                     st.cache_data.clear()
                     st.rerun()
                 else:
+                    st.error("❌ 寫入雲端失敗！原因如下：")
                     if not ok1:
-                        st.error(f"❌ 寫入庫存分頁 ({inv_sheet_name}) 失敗：{err1}")
+                        st.error(f"・庫存分頁寫入失敗 ({inv_sheet_name}): {err1}")
                     if not ok2:
-                        st.error(f"❌ 寫入領用紀錄分頁 ({log_sheet_name}) 失敗：{err2}")
-                        st.info("💡 提示：請確認您的 Google Sheet 中是否有建立名為『領用紀錄』或『Sheet2』的分頁喔！")
+                        st.error(f"・領用紀錄分頁寫入失敗 ({log_sheet_name}): {err2}")
+                        st.info("👉 **解決方案**：請在您的 Google Sheet 下方點選 『+』 新增工作表，並將分頁命名為『領用紀錄』即可！")
+                        
+                        # 提供緊急下載按鈕，防止資料丟失
+                        csv_data = logs_df_new.to_csv(index=False).encode('utf-8-sig')
+                        st.download_button(
+                            label="📥 點此下載最新領用紀錄備份檔 (.csv)",
+                            data=csv_data,
+                            file_name=f"領用紀錄備份_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
 
 # -----------------------------------------------------------------------------
 # 頁面 2：藥品進貨/建檔登記
@@ -380,7 +391,7 @@ elif menu == "🗓️ 官方月報表與學期統計 (全月份動態產生)":
             roc_year = st.number_input("民國年份", min_value=110, max_value=130, value=115, step=1)
             ad_year = roc_year + 1911
         with c2:
-            sel_month = st.selectbox("選擇月份", list(range(1, 13)), index=8) # 預設 9 月
+            sel_month = st.selectbox("選擇月份", list(range(1, 13)), index=8)
         with c3:
             term_title = st.text_input("學期報表標題", value=f"{roc_year}-1 國立臺北大學校園門診藥品統計表")
 
