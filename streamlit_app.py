@@ -58,7 +58,7 @@ st.markdown("""
     }
     
     /* 全域字體大小提升 */
-    p, span, label, div, .stMarkdown, .stSelectbox label, .stNumberInput label, .stTextInput label, .stDateInput label {
+    p, span, label, div, .stMarkdown, .stSelectbox label, .stMultiSelect label, .stNumberInput label, .stTextInput label, .stDateInput label {
         font-size: 1.15rem !important;
         color: #3E2723 !important;
     }
@@ -139,7 +139,7 @@ def get_spreadsheet():
         st.error(f"❌ 開啟雲端試算表失敗: {e}")
         return None
 
-# 快取機制 (Cache 60 秒)，避免頻繁觸發 Google API 429 限制
+# 快取機制 (Cache 60 秒)
 @st.cache_data(ttl=60, show_spinner=False)
 def load_sheet_data(worksheet_name: str, expected_cols: list = None) -> pd.DataFrame:
     sh = get_spreadsheet()
@@ -156,7 +156,6 @@ def load_sheet_data(worksheet_name: str, expected_cols: list = None) -> pd.DataF
     except Exception:
         df = pd.DataFrame(columns=expected_cols)
 
-    # 自動補齊缺少的欄位
     for col in expected_cols:
         if col not in df.columns:
             if "數量" in col or "庫存" in col:
@@ -200,7 +199,6 @@ def safe_update_sheet(worksheet_name: str, df: pd.DataFrame, default_headers: li
         elif default_headers:
             ws.update([default_headers])
             
-        # 寫入成功後自動清空快取，確保下次讀取最新資料
         st.cache_data.clear()
         return True, "成功寫入雲端"
     except Exception as err:
@@ -210,7 +208,6 @@ def safe_update_sheet(worksheet_name: str, df: pd.DataFrame, default_headers: li
 # 效期檢查輔助函式（採用台灣時間）
 # ---------------------------------------------------------
 def parse_exp_date(exp_str):
-    """解析日期字串，支援 YYYY-MM-DD 與 YYYY-MM 格式"""
     if not exp_str or str(exp_str).strip() in ["", "nan", "None", "NaT"]:
         return None
     clean_str = str(exp_str).strip().replace('/', '-')
@@ -228,13 +225,12 @@ def parse_exp_date(exp_str):
     return None
 
 def get_expiration_status(exp_str):
-    """回傳 (狀態, 解析後的日期物件) : status 可為 'EXPIRED', 'WARNING', 'NORMAL'"""
     exp_date = parse_exp_date(exp_str)
     if not exp_date:
         return "NORMAL", None
     
-    today = get_tw_date() # 使用台灣標準日期
-    warning_limit = today + timedelta(days=30) # 30 天內（一個月）預警
+    today = get_tw_date()
+    warning_limit = today + timedelta(days=30)
     
     if exp_date < today:
         return "EXPIRED", exp_date
@@ -315,7 +311,7 @@ if "claim_cart" not in st.session_state:
 # 4. 主頁面內容控制
 # ---------------------------------------------------------
 
-# --- 頁面 1: 藥品領用登記 ---
+# --- 頁面 1: 藥品領用登記 (升級為多選與個別輸入數量) ---
 if page == "📋 藥品領用登記":
     st.title("📋 藥品領用登記")
     inventory_df = load_sheet_data("庫存", INV_COLS)
@@ -325,9 +321,11 @@ if page == "📋 藥品領用登記":
     else:
         target_col = "現有庫存" if "現有庫存" in inventory_df.columns else ("剩餘庫存" if "剩餘庫存" in inventory_df.columns else "現有庫存")
         
-        st.subheader("1. 搜尋與選擇藥品")
+        st.subheader("1. 搜尋與選擇多款藥品")
         med_options = []
-        for _, row in inventory_df.iterrows():
+        med_mapping = {}
+        
+        for idx, row in inventory_df.iterrows():
             m_name = str(row.get("藥品名稱", "")).strip()
             if not m_name: continue
             z_name = str(row.get("中文名稱", "")).strip()
@@ -335,7 +333,6 @@ if page == "📋 藥品領用登記":
             exp_str = str(row.get("有效期限", "")).strip()
             stock_val = row.get(target_col, 0)
             
-            # 計算效期標籤
             status_code, exp_d = get_expiration_status(exp_str)
             exp_tag = ""
             if status_code == "EXPIRED":
@@ -346,53 +343,84 @@ if page == "📋 藥品領用登記":
                 exp_tag = f" (效期: {exp_str})"
                 
             batch_str = f" | 批號: {batch_no}" if batch_no else ""
-            med_options.append(f"{m_name} ({z_name}){exp_tag}{batch_str} | 目前庫存: {stock_val}")
+            opt_str = f"{m_name} ({z_name}){exp_tag}{batch_str} | 目前庫存: {stock_val}"
+            med_options.append(opt_str)
             
-        if med_options:
-            col_sel1, col_sel2, col_sel3 = st.columns([3, 1, 1])
-            with col_sel1:
-                selected_med_str = st.selectbox("搜尋或下拉選擇藥品：", med_options, key="med_selectbox")
-                
-            selected_idx = med_options.index(selected_med_str)
-            selected_row = inventory_df.iloc[selected_idx]
-            sel_med_name = selected_row.get("藥品名稱", "")
-            sel_zh_name = selected_row.get("中文名稱", "")
-            sel_batch_no = selected_row.get("批號", "")
-            sel_exp_str = str(selected_row.get("有效期限", "")).strip()
-            
-            curr_stock_num = pd.to_numeric(selected_row.get(target_col, 0), errors='coerce')
+            curr_stock_num = pd.to_numeric(stock_val, errors='coerce')
             curr_stock_num = 0 if pd.isna(curr_stock_num) else int(curr_stock_num)
             
-            sel_status, sel_exp_d = get_expiration_status(sel_exp_str)
+            med_mapping[opt_str] = {
+                "m_name": m_name,
+                "z_name": z_name,
+                "batch_no": batch_no,
+                "stock": curr_stock_num,
+                "status": status_code,
+                "exp_d": exp_d
+            }
+        
+        # 🌟 多選下拉選單
+        selected_med_strs = st.multiselect("可一次搜尋並選擇多款藥品：", med_options, key="multi_med_select")
+        
+        if selected_med_strs:
+            st.markdown("##### ✏️ 請鍵入各藥品的領用數量：")
+            input_quantities = {}
             
-            with col_sel2:
-                add_qty = st.number_input("輸入領用數量", min_value=1, value=1, step=1, key="add_qty_input")
+            # 動態渲染所選藥品的數量輸入欄位
+            for opt_str in selected_med_strs:
+                info = med_mapping[opt_str]
+                disp_name = f"{info['m_name']} ({info['z_name']})" if info['z_name'] else info['m_name']
                 
-            with col_sel3:
-                st.write(" ")
-                st.write(" ")
-                if sel_status == "EXPIRED":
-                    st.button("🚫 已過期(禁領)", disabled=True, use_container_width=True)
-                else:
-                    if st.button("➕ 加入領用清單", use_container_width=True):
-                        existing_item = next((item for item in st.session_state.claim_cart if item["藥品名稱"] == sel_med_name), None)
+                col_m1, col_m2, col_m3 = st.columns([3, 1, 1])
+                
+                with col_m1:
+                    if info['status'] == "EXPIRED":
+                        st.error(f"❌ **{disp_name}** [已過期 ({info['exp_d']}) - 禁止領用]")
+                    elif info['status'] == "WARNING":
+                        st.warning(f"⚠️ **{disp_name}** [快到期 ({info['exp_d']})]")
+                    else:
+                        st.write(f"💊 **{disp_name}**")
+                
+                with col_m2:
+                    st.write(f"目前庫存：**{info['stock']}**")
+                    
+                with col_m3:
+                    if info['status'] != "EXPIRED":
+                        q = st.number_input(
+                            "數量", 
+                            min_value=1, 
+                            max_value=max(1, info['stock']), 
+                            value=1, 
+                            step=1, 
+                            key=f"qty_{info['m_name']}"
+                        )
+                        input_quantities[info['m_name']] = q
+                    else:
+                        st.write("🚫 不可領用")
+            
+            if st.button("➕ 一鍵批次加入領用清單", type="primary", use_container_width=True):
+                added_count = 0
+                for opt_str in selected_med_strs:
+                    info = med_mapping[opt_str]
+                    if info['status'] != "EXPIRED":
+                        m_name = info['m_name']
+                        q = input_quantities.get(m_name, 1)
+                        
+                        existing_item = next((item for item in st.session_state.claim_cart if item["藥品名稱"] == m_name), None)
                         if existing_item:
-                            existing_item["領用數量"] += add_qty
-                            st.toast(f"已更新 {sel_zh_name or sel_med_name} 的數量為 {existing_item['領用數量']} 個！")
+                            existing_item["領用數量"] += q
                         else:
                             st.session_state.claim_cart.append({
-                                "藥品名稱": sel_med_name,
-                                "中文名稱": sel_zh_name,
-                                "批號": sel_batch_no,
-                                "目前庫存": curr_stock_num,
-                                "領用數量": add_qty
+                                "藥品名稱": m_name,
+                                "中文名稱": info['z_name'],
+                                "批號": info['batch_no'],
+                                "目前庫存": info['stock'],
+                                "領用數量": q
                             })
-                            st.toast(f"已將 {sel_zh_name or sel_med_name} 加入領用清單！")
-
-            if sel_status == "EXPIRED":
-                st.error(f"🛑 **警告：【{sel_zh_name or sel_med_name}】已於 {sel_exp_d} 到期！過期藥品禁止領用。**")
-            elif sel_status == "WARNING":
-                st.warning(f"⚠️ **提醒：【{sel_zh_name or sel_med_name}】將於 {sel_exp_d} 到期（剩餘一個月內），請注意優先領用！**")
+                        added_count += 1
+                
+                if added_count > 0:
+                    st.toast(f"🎉 已成功加入 {added_count} 款藥品至領用清單！")
+                    st.rerun()
 
         st.markdown("---")
         st.subheader("2. 本次領用清單預覽與填寫資訊")
@@ -415,7 +443,6 @@ if page == "📋 藥品領用登記":
             )
             
             col_info1, col_info2 = st.columns([1, 2])
-            # 🕒 正確設置台灣標準日期
             use_date = col_info1.date_input("領用日期", get_tw_date())
             with col_info2:
                 st.write(" ")
@@ -473,7 +500,7 @@ if page == "📋 藥品領用登記":
                     else:
                         st.error(f"❌ 更新失敗: 領用紀錄({msg1}) / 庫存({msg2})")
         else:
-            st.info("🛒 目前領用清單為空。請由上方選單選擇藥品後，點擊「➕ 加入領用清單」。")
+            st.info("🛒 目前領用清單為空。請由上方多選選單選擇藥品並填寫數量後，點擊「➕ 一鍵批次加入領用清單」。")
 
 # --- 頁面 2: 藥品庫存清單 ---
 elif page == "📦 藥品庫存清單(可編修庫存/批號/效期)":
@@ -525,7 +552,6 @@ elif page == "🚚 進貨登記":
             med_name = col1.text_input("藥品英文名稱", "")
             zh_name = col2.text_input("藥品中文名稱", "")
             batch_no = col1.text_input("批號 (Batch No.)", "")
-            # 🕒 採用台灣日期
             exp_date_val = col2.date_input("有效期限", get_tw_date() + timedelta(days=365))
         else:
             med_name = selected_option
@@ -541,7 +567,6 @@ elif page == "🚚 進貨登記":
             exp_date_val = col2.date_input("有效期限", value=default_d)
             
         restock_qty = col2.number_input("進貨數量", min_value=1, step=1, value=100)
-        # 🕒 進貨日期預設為台灣標準日期
         restock_date = col1.date_input("進貨日期", get_tw_date())
         restock_remarks = col2.text_input("進貨備註 / 廠商資訊", "")
         
