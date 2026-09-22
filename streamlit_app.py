@@ -12,8 +12,6 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("💊 衛保組藥品庫存管理系統")
-
 # 初始化 Google Sheets 連線
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
@@ -25,7 +23,6 @@ except Exception as e:
 def get_spreadsheet():
     try:
         url = st.secrets["connections"]["gsheets"]["spreadsheet"]
-        # 取得底層原生 gspread 客戶端
         client = getattr(conn.client, "_client", conn.client)
         return client.open_by_url(url)
     except Exception as e:
@@ -51,7 +48,6 @@ def safe_update_sheet(worksheet_name: str, df: pd.DataFrame, default_headers: li
         return False, "無法連接至 Google 試算表"
     
     try:
-        # 嘗試取得目標分頁，不存在則自動建立
         try:
             ws = sh.worksheet(worksheet_name)
         except Exception:
@@ -59,12 +55,10 @@ def safe_update_sheet(worksheet_name: str, df: pd.DataFrame, default_headers: li
             if default_headers and df.empty:
                 df = pd.DataFrame(columns=default_headers)
 
-        # 清理資料格式
         clean_df = df.fillna("").copy()
         for col in clean_df.columns:
             clean_df[col] = clean_df[col].astype(str)
 
-        # 覆寫工作表內容
         ws.clear()
         if not clean_df.empty:
             ws.update([clean_df.columns.values.tolist()] + clean_df.values.tolist())
@@ -76,11 +70,22 @@ def safe_update_sheet(worksheet_name: str, df: pd.DataFrame, default_headers: li
         return False, str(err)
 
 # ---------------------------------------------------------
-# 2. 側邊欄控制與偵錯區
+# 2. 左側邊欄功能選單與維護區
 # ---------------------------------------------------------
+st.sidebar.title("💊 衛保組藥品系統")
+st.sidebar.markdown("---")
+
+# 主功能選單
+page = st.sidebar.radio(
+    "📌 請選擇功能：",
+    ["📦 藥品庫存清單", "📋 領用登記", "🚚 進貨登記", "📜 歷史紀錄"],
+    index=0
+)
+
+st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 系統設定與維護")
 
-# 顯示雲端實際偵測到的分頁
+# 顯示雲端連線狀態與分頁資訊
 sh = get_spreadsheet()
 if sh:
     try:
@@ -97,13 +102,12 @@ if st.sidebar.button("🔄 手動刷新雲端資料", use_container_width=True):
     st.rerun()
 
 # ---------------------------------------------------------
-# 3. 主頁面頁籤設計
+# 3. 主頁面內容控制（根據左側選單切換）
 # ---------------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs(["📦 藥品庫存清單", "📋 領用登記", "🚚 進貨登記", "📜 歷史紀錄"])
 
-# --- Tab 1: 藥品庫存清單 ---
-with tab1:
-    st.subheader("📦 目前庫存狀態")
+# --- 頁面 1: 藥品庫存清單 ---
+if page == "📦 藥品庫存清單":
+    st.title("📦 目前庫存狀態")
     inventory_df = load_sheet_data("庫存")
     
     if not inventory_df.empty:
@@ -120,9 +124,9 @@ with tab1:
     else:
         st.info("目前「庫存」分頁尚無資料或試算表載入中。")
 
-# --- Tab 2: 領用登記 ---
-with tab2:
-    st.subheader("📋 藥品領用登記")
+# --- 頁面 2: 領用登記 ---
+elif page == "📋 領用登記":
+    st.title("📋 藥品領用登記")
     inventory_df = load_sheet_data("庫存")
     
     if inventory_df.empty or "藥品名稱" not in inventory_df.columns:
@@ -169,9 +173,13 @@ with tab2:
                 
                 # 2. 更新「庫存」
                 if success_usage:
-                    curr_qty = pd.to_numeric(inventory_df.at[idx, "剩餘庫存"], errors='coerce')
+                    curr_qty = pd.to_numeric(inventory_df.at[idx, "現有庫存"], errors='coerce')
+                    if pd.isna(curr_qty):
+                        curr_qty = pd.to_numeric(inventory_df.at[idx, "剩餘庫存"], errors='coerce')
                     curr_qty = 0 if pd.isna(curr_qty) else int(curr_qty)
-                    inventory_df.at[idx, "剩餘庫存"] = max(0, curr_qty - use_qty)
+                    
+                    target_col = "現有庫存" if "現有庫存" in inventory_df.columns else "剩餘庫存"
+                    inventory_df.at[idx, target_col] = max(0, curr_qty - use_qty)
                     
                     success_inv, msg2 = safe_update_sheet("庫存", inventory_df)
                     
@@ -183,9 +191,9 @@ with tab2:
                 else:
                     st.error(f"❌ 寫入「領用紀錄」失敗：{msg1}")
 
-# --- Tab 3: 進貨登記 ---
-with tab3:
-    st.subheader("🚚 藥品進貨登記")
+# --- 頁面 3: 進貨登記 ---
+elif page == "🚚 進貨登記":
+    st.title("🚚 藥品進貨登記")
     inventory_df = load_sheet_data("庫存")
     
     with st.form("restock_form", clear_on_submit=True):
@@ -232,18 +240,18 @@ with tab3:
                 )
                 
                 if success_restock:
+                    target_col = "現有庫存" if "現有庫存" in inventory_df.columns else "剩餘庫存"
+                    
                     if not inventory_df.empty and med_name in inventory_df["藥品名稱"].values:
                         idx = inventory_df[inventory_df["藥品名稱"] == med_name].index[0]
-                        curr_qty = pd.to_numeric(inventory_df.at[idx, "剩餘庫存"], errors='coerce')
+                        curr_qty = pd.to_numeric(inventory_df.at[idx, target_col], errors='coerce')
                         curr_qty = 0 if pd.isna(curr_qty) else int(curr_qty)
-                        inventory_df.at[idx, "剩餘庫存"] = curr_qty + restock_qty
+                        inventory_df.at[idx, target_col] = curr_qty + restock_qty
                     else:
                         new_inv_row = pd.DataFrame([{
-                            "領用時間": "",
                             "藥品名稱": med_name,
                             "中文名稱": zh_name,
-                            "領用數量": 0,
-                            "剩餘庫存": restock_qty,
+                            target_col: restock_qty,
                             "備註": ""
                         }])
                         inventory_df = pd.concat([inventory_df, new_inv_row], ignore_index=True)
@@ -257,10 +265,10 @@ with tab3:
                 else:
                     st.error(f"❌ 寫入「進貨紀錄」失敗：{msg1}")
 
-# --- Tab 4: 歷史紀錄 ---
-with tab4:
-    st.subheader("📜 歷史異動紀錄")
-    sub_tab1, sub_tab2 = st.tabs(["領用紀錄歷史", "進貨紀錄歷史"])
+# --- 頁面 4: 歷史紀錄 ---
+elif page == "📜 歷史紀錄":
+    st.title("📜 歷史異動紀錄")
+    sub_tab1, sub_tab2 = st.tabs(["📋 領用紀錄歷史", "🚚 進貨紀錄歷史"])
     
     with sub_tab1:
         u_df = load_sheet_data("領用紀錄")
