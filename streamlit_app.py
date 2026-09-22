@@ -31,17 +31,31 @@ def get_spreadsheet():
         st.error(f"❌ 開啟雲端試算表失敗: {e}")
         return None
 
-# 讀取特定分頁資料
-def load_sheet_data(worksheet_name: str) -> pd.DataFrame:
+# 讀取特定分頁資料（含防護性欄位補齊機制，防止 KeyError）
+def load_sheet_data(worksheet_name: str, expected_cols: list = None) -> pd.DataFrame:
     sh = get_spreadsheet()
+    if expected_cols is None:
+        expected_cols = []
+        
     if not sh:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=expected_cols)
+        
     try:
         ws = sh.worksheet(worksheet_name)
         data = ws.get_all_records()
-        return pd.DataFrame(data)
+        df = pd.DataFrame(data)
     except Exception:
-        return pd.DataFrame()
+        df = pd.DataFrame(columns=expected_cols)
+
+    # 防護機制：自動補齊缺少的欄位，避免 KeyError
+    for col in expected_cols:
+        if col not in df.columns:
+            if "數量" in col or "庫存" in col:
+                df[col] = 0
+            else:
+                df[col] = ""
+                
+    return df
 
 # 原生 gspread 寫入邏輯（含自動建立分頁與預設標題）
 def safe_update_sheet(worksheet_name: str, df: pd.DataFrame, default_headers: list = None):
@@ -70,6 +84,11 @@ def safe_update_sheet(worksheet_name: str, df: pd.DataFrame, default_headers: li
         return True, "成功寫入雲端"
     except Exception as err:
         return False, str(err)
+
+# 預設標準欄位定義
+INV_COLS = ["藥品名稱", "中文名稱", "現有庫存", "批號", "備註"]
+USAGE_COLS = ["領用時間", "藥品名稱", "中文名稱", "批號", "領用數量", "領用類別", "備註"]
+RESTOCK_COLS = ["進貨時間", "藥品名稱", "中文名稱", "批號", "進貨數量", "備註"]
 
 # ---------------------------------------------------------
 # 2. 左側邊欄功能選單與維護區
@@ -117,63 +136,66 @@ if "claim_cart" not in st.session_state:
 # --- 頁面 1: 藥品領用登記 ---
 if page == "📋 藥品領用登記":
     st.title("📋 藥品領用登記")
-    inventory_df = load_sheet_data("庫存")
+    inventory_df = load_sheet_data("庫存", INV_COLS)
     
-    if inventory_df.empty or "藥品名稱" not in inventory_df.columns:
-        st.warning("⚠️ 請先確保「庫存」分頁有包含「藥品名稱」欄位資料。")
+    if inventory_df.empty or inventory_df["藥品名稱"].str.strip().eq("").all():
+        st.warning("⚠️ 目前「庫存」清單中無藥品資料，請先至「進貨登記」或「藥品庫存清單」新增藥品。")
     else:
         target_col = "現有庫存" if "現有庫存" in inventory_df.columns else ("剩餘庫存" if "剩餘庫存" in inventory_df.columns else "現有庫存")
         
         st.subheader("1. 搜尋並選擇藥品")
         
-        # 建立選單選項
         med_options = []
         for _, row in inventory_df.iterrows():
-            m_name = row.get("藥品名稱", "")
-            z_name = row.get("中文名稱", "")
-            batch_no = row.get("批號", "")
+            m_name = str(row.get("藥品名稱", "")).strip()
+            if not m_name:
+                continue
+            z_name = str(row.get("中文名稱", "")).strip()
+            batch_no = str(row.get("批號", "")).strip()
             stock_val = row.get(target_col, 0)
             batch_str = f" | 批號: {batch_no}" if batch_no else ""
             med_options.append(f"{m_name} ({z_name}){batch_str} | 目前庫存: {stock_val}")
             
-        col_sel1, col_sel2, col_sel3 = st.columns([3, 1, 1])
-        
-        with col_sel1:
-            selected_med_str = st.selectbox(
-                "搜尋或下拉選擇藥品（可鍵入關鍵字過濾）：",
-                med_options,
-                key="med_selectbox"
-            )
+        if not med_options:
+            st.info("💡 暫無可供選擇的藥品項目。")
+        else:
+            col_sel1, col_sel2, col_sel3 = st.columns([3, 1, 1])
             
-        # 解析選中的藥品資訊
-        selected_idx = med_options.index(selected_med_str)
-        selected_row = inventory_df.iloc[selected_idx]
-        sel_med_name = selected_row.get("藥品名稱", "")
-        sel_zh_name = selected_row.get("中文名稱", "")
-        sel_batch_no = selected_row.get("批號", "")
-        curr_stock_num = pd.to_numeric(selected_row.get(target_col, 0), errors='coerce')
-        curr_stock_num = 0 if pd.isna(curr_stock_num) else int(curr_stock_num)
-        
-        with col_sel2:
-            add_qty = st.number_input("輸入領用數量", min_value=1, value=1, step=1, key="add_qty_input")
+            with col_sel1:
+                selected_med_str = st.selectbox(
+                    "搜尋或下拉選擇藥品（可鍵入關鍵字過濾）：",
+                    med_options,
+                    key="med_selectbox"
+                )
+                
+            selected_idx = med_options.index(selected_med_str)
+            selected_row = inventory_df.iloc[selected_idx]
+            sel_med_name = selected_row.get("藥品名稱", "")
+            sel_zh_name = selected_row.get("中文名稱", "")
+            sel_batch_no = selected_row.get("批號", "")
+            curr_stock_num = pd.to_numeric(selected_row.get(target_col, 0), errors='coerce')
+            curr_stock_num = 0 if pd.isna(curr_stock_num) else int(curr_stock_num)
             
-        with col_sel3:
-            st.write(" ")
-            st.write(" ")
-            if st.button("➕ 加入領用清單", use_container_width=True, type="secondary"):
-                existing_item = next((item for item in st.session_state.claim_cart if item["藥品名稱"] == sel_med_name), None)
-                if existing_item:
-                    existing_item["領用數量"] += add_qty
-                    st.toast(f"已更新 {sel_zh_name or sel_med_name} 的數量為 {existing_item['領用數量']} 個！")
-                else:
-                    st.session_state.claim_cart.append({
-                        "藥品名稱": sel_med_name,
-                        "中文名稱": sel_zh_name,
-                        "批號": sel_batch_no,
-                        "目前庫存": curr_stock_num,
-                        "領用數量": add_qty
-                    })
-                    st.toast(f"已將 {sel_zh_name or sel_med_name} 加入領用清單！")
+            with col_sel2:
+                add_qty = st.number_input("輸入領用數量", min_value=1, value=1, step=1, key="add_qty_input")
+                
+            with col_sel3:
+                st.write(" ")
+                st.write(" ")
+                if st.button("➕ 加入領用清單", use_container_width=True, type="secondary"):
+                    existing_item = next((item for item in st.session_state.claim_cart if item["藥品名稱"] == sel_med_name), None)
+                    if existing_item:
+                        existing_item["領用數量"] += add_qty
+                        st.toast(f"已更新 {sel_zh_name or sel_med_name} 的數量為 {existing_item['領用數量']} 個！")
+                    else:
+                        st.session_state.claim_cart.append({
+                            "藥品名稱": sel_med_name,
+                            "中文名稱": sel_zh_name,
+                            "批號": sel_batch_no,
+                            "目前庫存": curr_stock_num,
+                            "領用數量": add_qty
+                        })
+                        st.toast(f"已將 {sel_zh_name or sel_med_name} 加入領用清單！")
 
         st.markdown("---")
         st.subheader("2. 本次領用清單預覽與填寫資訊")
@@ -220,7 +242,7 @@ if page == "📋 藥品領用登記":
                 elif edited_cart_df.empty:
                     st.error("⚠️ 領用清單目前為空，請先加入藥品！")
                 else:
-                    usage_df = load_sheet_data("領用紀錄")
+                    usage_df = load_sheet_data("領用紀錄", USAGE_COLS)
                     new_rows = []
                     
                     for _, row in edited_cart_df.iterrows():
@@ -249,7 +271,7 @@ if page == "📋 藥品領用登記":
                     
                     new_usage_df = pd.concat([usage_df, pd.DataFrame(new_rows)], ignore_index=True)
                     
-                    ok1, msg1 = safe_update_sheet("領用紀錄", new_usage_df, ["領用時間", "藥品名稱", "中文名稱", "批號", "領用數量", "領用類別", "備註"])
+                    ok1, msg1 = safe_update_sheet("領用紀錄", new_usage_df, USAGE_COLS)
                     ok2, msg2 = safe_update_sheet("庫存", inventory_df)
                     
                     if ok1 and ok2:
@@ -266,14 +288,9 @@ elif page == "📦 藥品庫存清單(可編修庫存/批號)":
     st.title("📦 藥品庫存與批號即時管理")
     st.caption("💡 您可以直接雙擊下方表格中的儲存格修訂**「現有庫存」**與**「批號」**（或新增/刪除品項），完成後點擊「💾 儲存庫存與批號變更至雲端」。")
     
-    inventory_df = load_sheet_data("庫存")
+    inventory_df = load_sheet_data("庫存", INV_COLS)
     target_col = "現有庫存" if "現有庫存" in inventory_df.columns else ("剩餘庫存" if "剩餘庫存" in inventory_df.columns else "現有庫存")
     
-    # 補足缺失基本欄位
-    for col_name in ["藥品名稱", "中文名稱", target_col, "批號", "備註"]:
-        if col_name not in inventory_df.columns:
-            inventory_df[col_name] = "" if col_name != target_col else 0
-            
     inventory_df[target_col] = pd.to_numeric(inventory_df[target_col], errors='coerce').fillna(0).astype(int)
     
     edited_inv_df = st.data_editor(
@@ -292,7 +309,7 @@ elif page == "📦 藥品庫存清單(可編修庫存/批號)":
     )
     
     if st.button("💾 儲存庫存與批號變更至雲端", type="primary", use_container_width=True):
-        ok, msg = safe_update_sheet("庫存", edited_inv_df, ["藥品名稱", "中文名稱", target_col, "批號", "備註"])
+        ok, msg = safe_update_sheet("庫存", edited_inv_df, INV_COLS)
         if ok:
             st.success("✅ 藥品庫存數量與批號資訊已成功更新至 Google Sheets！")
             st.cache_data.clear()
@@ -303,13 +320,14 @@ elif page == "📦 藥品庫存清單(可編修庫存/批號)":
 # --- 頁面 3: 進貨登記 ---
 elif page == "🚚 進貨登記":
     st.title("🚚 藥品進貨登記")
-    inventory_df = load_sheet_data("庫存")
+    inventory_df = load_sheet_data("庫存", INV_COLS)
     target_col = "現有庫存" if "現有庫存" in inventory_df.columns else ("剩餘庫存" if "剩餘庫存" in inventory_df.columns else "現有庫存")
     
     with st.form("restock_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         
-        med_list = inventory_df["藥品名稱"].tolist() if not inventory_df.empty and "藥品名稱" in inventory_df.columns else []
+        med_list = inventory_df["藥品名稱"].dropna().astype(str).tolist() if not inventory_df.empty else []
+        med_list = [m for m in med_list if m.strip()]
         med_list.insert(0, "+ 新增未在庫存的藥品")
         
         selected_option = col1.selectbox("選擇或新增藥品", med_list)
@@ -323,7 +341,7 @@ elif page == "🚚 進貨登記":
             matched = inventory_df[inventory_df["藥品名稱"] == med_name]
             zh_name = matched.iloc[0]["中文名稱"] if not matched.empty and "中文名稱" in matched.columns else ""
             exist_batch = matched.iloc[0]["批號"] if not matched.empty and "批號" in matched.columns else ""
-            col2.text_input("藥品中文名稱", value=zh_name, disabled=True)
+            col2.text_input("藥品中文名稱", value=str(zh_name), disabled=True)
             batch_no = col1.text_input("批號 (Batch No.)", value=str(exist_batch))
             
         restock_qty = col2.number_input("進貨數量", min_value=1, step=1, value=100)
@@ -333,10 +351,10 @@ elif page == "🚚 進貨登記":
         restock_btn = st.form_submit_button("確認進貨並更新雲端庫存", use_container_width=True)
         
         if restock_btn:
-            if not med_name:
+            if not med_name.strip():
                 st.error("請輸入藥品名稱！")
             else:
-                restock_df = load_sheet_data("進貨紀錄")
+                restock_df = load_sheet_data("進貨紀錄", RESTOCK_COLS)
                 new_restock_row = pd.DataFrame([{
                     "進貨時間": str(restock_date),
                     "藥品名稱": med_name,
@@ -347,11 +365,7 @@ elif page == "🚚 進貨登記":
                 }])
                 updated_restock_df = pd.concat([restock_df, new_restock_row], ignore_index=True)
                 
-                success_restock, msg1 = safe_update_sheet(
-                    "進貨紀錄", 
-                    updated_restock_df,
-                    default_headers=["進貨時間", "藥品名稱", "中文名稱", "批號", "進貨數量", "備註"]
-                )
+                success_restock, msg1 = safe_update_sheet("進貨紀錄", updated_restock_df, RESTOCK_COLS)
                 
                 if success_restock:
                     if not inventory_df.empty and med_name in inventory_df["藥品名稱"].values:
@@ -387,12 +401,12 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
     
     tab_rec1, tab_rec2 = st.tabs(["📋 領用紀錄編輯 (刪除/修改自動補回庫存)", "🚚 進貨紀錄編輯 (刪除/修改自動扣減庫存)"])
     
-    inventory_df = load_sheet_data("庫存")
+    inventory_df = load_sheet_data("庫存", INV_COLS)
     target_col = "現有庫存" if "現有庫存" in inventory_df.columns else ("剩餘庫存" if "剩餘庫存" in inventory_df.columns else "現有庫存")
     
     # 頁籤 A: 領用紀錄編輯
     with tab_rec1:
-        u_df = load_sheet_data("領用紀錄")
+        u_df = load_sheet_data("領用紀錄", USAGE_COLS)
         if not u_df.empty:
             edited_u_df = st.data_editor(
                 u_df,
@@ -402,18 +416,15 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
             )
             
             if st.button("💾 儲存「領用紀錄」修改並自動精準同步庫存", type="primary"):
-                # 1. 舊總領用量
                 u_df["領用數量"] = pd.to_numeric(u_df["領用數量"], errors='coerce').fillna(0)
                 old_totals = u_df.groupby("藥品名稱")["領用數量"].sum().to_dict()
                 
-                # 2. 新總領用量
                 if not edited_u_df.empty and "領用數量" in edited_u_df.columns and "藥品名稱" in edited_u_df.columns:
                     edited_u_df["領用數量"] = pd.to_numeric(edited_u_df["領用數量"], errors='coerce').fillna(0)
                     new_totals = edited_u_df.groupby("藥品名稱")["領用數量"].sum().to_dict()
                 else:
                     new_totals = {}
                 
-                # 3. 差額計算
                 all_meds = set(old_totals.keys()).union(set(new_totals.keys()))
                 
                 for med in all_meds:
@@ -421,7 +432,7 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
                         continue
                     old_qty = old_totals.get(med, 0)
                     new_qty = new_totals.get(med, 0)
-                    diff = old_qty - new_qty  # diff > 0 代表刪除或領用減少 -> 庫存應 (+) 加回去
+                    diff = old_qty - new_qty
                     
                     if diff != 0 and not inventory_df.empty and "藥品名稱" in inventory_df.columns:
                         m_idx = inventory_df[inventory_df["藥品名稱"] == med].index
@@ -431,7 +442,7 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
                             curr_stock = 0 if pd.isna(curr_stock) else int(curr_stock)
                             inventory_df.at[idx, target_col] = max(0, curr_stock + diff)
                 
-                ok1, msg1 = safe_update_sheet("領用紀錄", edited_u_df)
+                ok1, msg1 = safe_update_sheet("領用紀錄", edited_u_df, USAGE_COLS)
                 ok2, msg2 = safe_update_sheet("庫存", inventory_df)
                 
                 if ok1 and ok2:
@@ -445,7 +456,7 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
             
     # 頁籤 B: 進貨紀錄編輯
     with tab_rec2:
-        r_df = load_sheet_data("進貨紀錄")
+        r_df = load_sheet_data("進貨紀錄", RESTOCK_COLS)
         if not r_df.empty:
             edited_r_df = st.data_editor(
                 r_df,
@@ -454,18 +465,15 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
                 key="restock_editor"
             )
             if st.button("💾 儲存「進貨紀錄」修改並自動精準同步庫存", type="primary"):
-                # 1. 舊總進貨量
                 r_df["進貨數量"] = pd.to_numeric(r_df["進貨數量"], errors='coerce').fillna(0)
                 old_restock = r_df.groupby("藥品名稱")["進貨數量"].sum().to_dict()
                 
-                # 2. 新總進貨量
                 if not edited_r_df.empty and "進貨數量" in edited_r_df.columns and "藥品名稱" in edited_r_df.columns:
                     edited_r_df["進貨數量"] = pd.to_numeric(edited_r_df["進貨數量"], errors='coerce').fillna(0)
                     new_restock = edited_r_df.groupby("藥品名稱")["進貨數量"].sum().to_dict()
                 else:
                     new_restock = {}
                 
-                # 3. 差額計算
                 all_meds_r = set(old_restock.keys()).union(set(new_restock.keys()))
                 
                 for med in all_meds_r:
@@ -473,7 +481,7 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
                         continue
                     old_qty = old_restock.get(med, 0)
                     new_qty = new_restock.get(med, 0)
-                    diff = new_qty - old_qty  # diff < 0 代表刪除進貨 -> 庫存應 (-) 扣掉
+                    diff = new_qty - old_qty
                     
                     if diff != 0 and not inventory_df.empty and "藥品名稱" in inventory_df.columns:
                         m_idx = inventory_df[inventory_df["藥品名稱"] == med].index
@@ -483,7 +491,7 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
                             curr_stock = 0 if pd.isna(curr_stock) else int(curr_stock)
                             inventory_df.at[idx, target_col] = max(0, curr_stock + diff)
                             
-                ok1, msg1 = safe_update_sheet("進貨紀錄", edited_r_df)
+                ok1, msg1 = safe_update_sheet("進貨紀錄", edited_r_df, RESTOCK_COLS)
                 ok2, msg2 = safe_update_sheet("庫存", inventory_df)
                 
                 if ok1 and ok2:
@@ -513,19 +521,28 @@ elif page == "📊 月報表下載":
     prev_roc_year = prev_year - 1911
     
     if st.button("📥 產生並預覽月報表", type="primary", use_container_width=True):
-        inventory_df = load_sheet_data("庫存")
-        usage_df = load_sheet_data("領用紀錄")
-        restock_df = load_sheet_data("進貨紀錄")
+        inventory_df = load_sheet_data("庫存", INV_COLS)
+        usage_df = load_sheet_data("領用紀錄", USAGE_COLS)
+        restock_df = load_sheet_data("進貨紀錄", RESTOCK_COLS)
         
         target_col = "現有庫存" if "現有庫存" in inventory_df.columns else ("剩餘庫存" if "剩餘庫存" in inventory_df.columns else "現有庫存")
+        
+        # 字型型態轉化為字串防錯
+        usage_df["領用時間"] = usage_df["領用時間"].astype(str)
+        usage_df["藥品名稱"] = usage_df["藥品名稱"].astype(str)
+        restock_df["進貨時間"] = restock_df["進貨時間"].astype(str)
+        restock_df["藥品名稱"] = restock_df["藥品名稱"].astype(str)
         
         _, num_days = calendar.monthrange(selected_year, selected_month)
         
         report_rows = []
         
         for _, inv_row in inventory_df.iterrows():
-            med_name = inv_row.get("藥品名稱", "")
-            zh_name = inv_row.get("中文名稱", "")
+            med_name = str(inv_row.get("藥品名稱", "")).strip()
+            if not med_name:
+                continue
+                
+            zh_name = str(inv_row.get("中文名稱", "")).strip()
             full_name = f"{med_name}({zh_name})" if zh_name else med_name
             curr_stock = pd.to_numeric(inv_row.get(target_col, 0), errors='coerce')
             curr_stock = 0 if pd.isna(curr_stock) else int(curr_stock)
@@ -540,36 +557,22 @@ elif page == "📊 月報表下載":
                 day_str = f"{selected_year}-{selected_month:02d}-{d:02d}"
                 col_name = f"{selected_month}/{d}"
                 
-                if not usage_df.empty and "領用時間" in usage_df.columns:
-                    matched_u = usage_df[(usage_df["藥品名稱"] == med_name) & (usage_df["領用時間"] == day_str)]
-                    u_qty = pd.to_numeric(matched_u["領用數量"], errors='coerce').sum()
-                else:
-                    u_qty = 0
+                matched_u = usage_df[(usage_df["藥品名稱"] == med_name) & (usage_df["領用時間"] == day_str)]
+                u_qty = pd.to_numeric(matched_u["領用數量"], errors='coerce').sum() if not matched_u.empty else 0
                     
                 row_dict[col_name] = int(u_qty) if not pd.isna(u_qty) else 0
                 daily_total += row_dict[col_name]
                 
             # 計算當月公藥使用量
-            if not usage_df.empty and "領用時間" in usage_df.columns:
-                m_start = f"{selected_year}-{selected_month:02d}-01"
-                m_end = f"{selected_year}-{selected_month:02d}-{num_days:02d}"
-                m_usage = usage_df[(usage_df["藥品名稱"] == med_name) & (usage_df["領用時間"] >= m_start) & (usage_df["領用時間"] <= m_end)]
+            m_start = f"{selected_year}-{selected_month:02d}-01"
+            m_end = f"{selected_year}-{selected_month:02d}-{num_days:02d}"
+            
+            m_usage = usage_df[(usage_df["藥品名稱"] == med_name) & (usage_df["領用時間"] >= m_start) & (usage_df["領用時間"] <= m_end)]
+            public_qty = pd.to_numeric(m_usage[m_usage["領用類別"] == "公藥"]["領用數量"], errors='coerce').sum() if not m_usage.empty else 0
                 
-                if "領用類別" in m_usage.columns:
-                    public_qty = pd.to_numeric(m_usage[m_usage["領用類別"] == "公藥"]["領用數量"], errors='coerce').sum()
-                else:
-                    public_qty = 0
-            else:
-                public_qty = 0
-                
-            # 計算進貨數量
-            if not restock_df.empty and "進貨時間" in restock_df.columns:
-                m_start = f"{selected_year}-{selected_month:02d}-01"
-                m_end = f"{selected_year}-{selected_month:02d}-{num_days:02d}"
-                matched_r = restock_df[(restock_df["藥品名稱"] == med_name) & (restock_df["進貨時間"] >= m_start) & (restock_df["進貨時間"] <= m_end)]
-                restock_qty = pd.to_numeric(matched_r["進貨數量"], errors='coerce').sum()
-            else:
-                restock_qty = 0
+            # 計算當月進貨數量
+            matched_r = restock_df[(restock_df["藥品名稱"] == med_name) & (restock_df["進貨時間"] >= m_start) & (restock_df["進貨時間"] <= m_end)]
+            restock_qty = pd.to_numeric(matched_r["進貨數量"], errors='coerce').sum() if not matched_r.empty else 0
                 
             row_dict["當月使用\n總量"] = daily_total
             row_dict["購入量"] = int(restock_qty)
@@ -581,29 +584,32 @@ elif page == "📊 月報表下載":
             
         report_df = pd.DataFrame(report_rows)
         
-        st.subheader("📋 報表預覽")
-        st.dataframe(report_df, use_container_width=True, hide_index=True)
-        
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            title_text = f"國立臺北大學衛保組 {acad_year}學年度{semester}藥品使用月報與全學期統計表 ({roc_year}學年度{selected_month}月起)"
+        if report_df.empty:
+            st.warning("⚠️ 目前沒有可呈現的藥品資料，請確認「庫存」分頁中是否有項目。")
+        else:
+            st.subheader("📋 報表預覽")
+            st.dataframe(report_df, use_container_width=True, hide_index=True)
             
-            workbook = writer.book
-            worksheet = workbook.add_worksheet('月報表')
-            writer.sheets['月報表'] = worksheet
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                title_text = f"國立臺北大學衛保組 {acad_year}學年度{semester}藥品使用月報與全學期統計表 ({roc_year}學年度{selected_month}月起)"
+                
+                workbook = writer.book
+                worksheet = workbook.add_worksheet('月報表')
+                writer.sheets['月報表'] = worksheet
+                
+                title_format = workbook.add_format({'bold': True, 'font_size': 14})
+                worksheet.write(0, 0, title_text, title_format)
+                
+                report_df.to_excel(writer, sheet_name='月報表', startrow=1, index=False)
+                
+            excel_data = output.getvalue()
+            file_name = f"國立臺北大學衛保組_{acad_year}學年度_{selected_month}月藥品使用月報表.xlsx"
             
-            title_format = workbook.add_format({'bold': True, 'font_size': 14})
-            worksheet.write(0, 0, title_text, title_format)
-            
-            report_df.to_excel(writer, sheet_name='月報表', startrow=1, index=False)
-            
-        excel_data = output.getvalue()
-        file_name = f"國立臺北大學衛保組_{acad_year}學年度_{selected_month}月藥品使用月報表.xlsx"
-        
-        st.download_button(
-            label="📥 點此下載標準 Excel 月報表 (.xlsx)",
-            data=excel_data,
-            file_name=file_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
+            st.download_button(
+                label="📥 點此下載標準 Excel 月報表 (.xlsx)",
+                data=excel_data,
+                file_name=file_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
