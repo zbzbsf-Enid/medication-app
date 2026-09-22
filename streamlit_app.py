@@ -197,15 +197,15 @@ if page == "📋 藥品領用登記":
                 key="cart_data_editor"
             )
             
-            col_info1, col_info2, col_info3 = st.columns([1, 1, 2])
+            col_info1, col_info2 = st.columns([1, 2])
             use_date = col_info1.date_input("領用日期", datetime.now())
             
-            # 使用勾選框決定「個人」或「公藥」
-            st.write(" ")
-            is_public_med = col_info2.checkbox("🏥 勾選為「公藥領用」", value=False, help="未勾選時預設為「個人領用」")
-            claim_type = "公藥" if is_public_med else "個人"
+            with col_info2:
+                st.write(" ")
+                st.write(" ")
+                is_public_med = st.checkbox("🏥 勾選為「公藥領用」", value=False, help="未勾選時預設為「個人領用」")
             
-            remarks = col_info3.text_input("備註 / 領用單位或個人", "")
+            claim_type = "公藥" if is_public_med else "個人"
             
             col_btn1, col_btn2 = st.columns([1, 4])
             if col_btn1.button("🗑️ 清空領用清單", use_container_width=True):
@@ -236,7 +236,7 @@ if page == "📋 藥品領用登記":
                             "批號": b_no,
                             "領用數量": u_qty,
                             "領用類別": claim_type,
-                            "備註": remarks
+                            "備註": ""
                         })
                         
                         # 扣減庫存
