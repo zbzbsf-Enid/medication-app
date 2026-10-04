@@ -20,7 +20,7 @@ def get_tw_date():
     return get_tw_now().date()
 
 # ---------------------------------------------------------
-# 2. 頁面基本設定與溫暖風視覺 CSS (加大標題字體與加粗)
+# 2. 頁面基本設定與溫暖風視覺 CSS
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="衛保組藥品庫存管理系統",
@@ -732,7 +732,7 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
         else:
             st.info("目前無進貨紀錄。")
 
-# --- 頁面 5: 月報表下載 ---
+# --- 頁面 5: 月報表下載 (🌟 已修正雙重批號比對邏輯) ---
 elif page == "📊 月報表下載":
     st.title("📊 藥品使用月報表與統計表繪出")
     st.write("產出格式符合國立臺北大學衛保組月報表標準格式。")
@@ -759,8 +759,17 @@ elif page == "📊 月報表下載":
         
         usage_df["領用時間"] = usage_df["領用時間"].astype(str)
         usage_df["藥品名稱"] = usage_df["藥品名稱"].astype(str)
+        if "批號" in usage_df.columns:
+            usage_df["批號"] = usage_df["批號"].astype(str).str.strip()
+        else:
+            usage_df["批號"] = ""
+            
         restock_df["進貨時間"] = restock_df["進貨時間"].astype(str)
         restock_df["藥品名稱"] = restock_df["藥品名稱"].astype(str)
+        if "批號" in restock_df.columns:
+            restock_df["批號"] = restock_df["批號"].astype(str).str.strip()
+        else:
+            restock_df["批號"] = ""
         
         _, num_days = calendar.monthrange(selected_year, selected_month)
         
@@ -772,6 +781,8 @@ elif page == "📊 月報表下載":
                 continue
                 
             zh_name = str(inv_row.get("中文名稱", "")).strip()
+            batch_no = str(inv_row.get("批號", "")).strip()
+            
             full_name = f"{med_name}({zh_name})" if zh_name else med_name
             curr_stock = pd.to_numeric(inv_row.get(target_col, 0), errors='coerce')
             curr_stock = 0 if pd.isna(curr_stock) else int(curr_stock)
@@ -786,7 +797,12 @@ elif page == "📊 月報表下載":
                 day_str = f"{selected_year}-{selected_month:02d}-{d:02d}"
                 col_name = f"{selected_month}/{d}"
                 
-                matched_u = usage_df[(usage_df["藥品名稱"] == med_name) & (usage_df["領用時間"] == day_str)]
+                # 🌟 精準比對「藥品名稱」與「批號」，避免跨批號重複帶入數量
+                if batch_no:
+                    matched_u = usage_df[(usage_df["藥品名稱"] == med_name) & (usage_df["批號"] == batch_no) & (usage_df["領用時間"] == day_str)]
+                else:
+                    matched_u = usage_df[(usage_df["藥品名稱"] == med_name) & (usage_df["領用時間"] == day_str)]
+                    
                 u_qty = pd.to_numeric(matched_u["領用數量"], errors='coerce').sum() if not matched_u.empty else 0
                     
                 row_dict[col_name] = int(u_qty) if not pd.isna(u_qty) else 0
@@ -795,10 +811,15 @@ elif page == "📊 月報表下載":
             m_start = f"{selected_year}-{selected_month:02d}-01"
             m_end = f"{selected_year}-{selected_month:02d}-{num_days:02d}"
             
-            m_usage = usage_df[(usage_df["藥品名稱"] == med_name) & (usage_df["領用時間"] >= m_start) & (usage_df["領用時間"] <= m_end)]
-            public_qty = pd.to_numeric(m_usage[m_usage["領用類別"] == "公藥"]["領用數量"], errors='coerce').sum() if not m_usage.empty else 0
+            # 🌟 精準比對「藥品名稱」與「批號」計算月公藥使用與進貨
+            if batch_no:
+                m_usage = usage_df[(usage_df["藥品名稱"] == med_name) & (usage_df["批號"] == batch_no) & (usage_df["領用時間"] >= m_start) & (usage_df["領用時間"] <= m_end)]
+                matched_r = restock_df[(restock_df["藥品名稱"] == med_name) & (restock_df["批號"] == batch_no) & (restock_df["進貨時間"] >= m_start) & (restock_df["進貨時間"] <= m_end)]
+            else:
+                m_usage = usage_df[(usage_df["藥品名稱"] == med_name) & (usage_df["領用時間"] >= m_start) & (usage_df["領用時間"] <= m_end)]
+                matched_r = restock_df[(restock_df["藥品名稱"] == med_name) & (restock_df["進貨時間"] >= m_start) & (restock_df["進貨時間"] <= m_end)]
                 
-            matched_r = restock_df[(restock_df["藥品名稱"] == med_name) & (restock_df["進貨時間"] >= m_start) & (restock_df["進貨時間"] <= m_end)]
+            public_qty = pd.to_numeric(m_usage[m_usage["領用類別"] == "公藥"]["領用數量"], errors='coerce').sum() if not m_usage.empty else 0
             restock_qty = pd.to_numeric(matched_r["進貨數量"], errors='coerce').sum() if not matched_r.empty else 0
                 
             row_dict["當月使用\n總量"] = daily_total
