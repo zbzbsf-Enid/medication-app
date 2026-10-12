@@ -22,7 +22,7 @@ INV_COLS = ["藥品名稱", "中文名稱", "單位", "現有庫存", "批號", 
 USAGE_COLS = ["領用時間", "領用人", "藥品名稱", "中文名稱", "批號", "領用數量", "領用類別", "備註"]
 RESTOCK_COLS = ["進貨時間", "藥品名稱", "中文名稱", "批號", "進貨數量", "廠商/來源", "備註"]
 
-# Google Sheets 連線物件 (選用官方 connections 模組)
+# Google Sheets 連線物件
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
@@ -82,7 +82,7 @@ if st.sidebar.button("🔄 手動刷新雲端資料", use_container_width=True):
     st.rerun()
 
 # =============================================================================
-# 頁面 1: 藥品領用登記 (已完全移除 領用人/經手人 輸入欄位)
+# 頁面 1: 藥品領用登記
 # =============================================================================
 if page == "💊 藥品領用登記":
     st.title("💊 藥品領用登記")
@@ -91,14 +91,11 @@ if page == "💊 藥品領用登記":
     if inventory_df.empty:
         st.warning("⚠️ 目前「庫存」清單中無藥品資料，請先至「進貨登記」或「藥品庫存清單」新增藥品。")
     else:
-        # 資料清理與格式轉換
         inventory_df["藥品名稱"] = inventory_df["藥品名稱"].astype(str).str.strip()
         inventory_df["批號"] = inventory_df["批號"].astype(str).str.strip()
         inventory_df["現有庫存"] = pd.to_numeric(inventory_df["現有庫存"], errors='coerce').fillna(0).astype(int)
         
-        # 💡 過濾條件：僅顯示現有庫存 > 0 的藥品
         available_inv = inventory_df[inventory_df["現有庫存"] > 0].copy()
-        # 💡 排序條件：依藥名 (A~Z) 與批號排序
         available_inv = available_inv.sort_values(by=["藥品名稱", "批號"], ascending=[True, True]).reset_index(drop=True)
         
         if available_inv.empty:
@@ -283,19 +280,117 @@ elif page == "🚚 進貨登記":
                     st.rerun()
 
 # =============================================================================
-# 頁面 4: 歷史紀錄
+# 頁面 4: 歷史紀錄 (新增「刪除紀錄與自動同步庫存」)
 # =============================================================================
 elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
-    st.title("📜 歷史領用與進貨紀錄")
-    tab1, tab2 = st.tabs(["領用紀錄", "進貨紀錄"])
+    st.title("📜 歷史紀錄管理與庫存同步異動")
+    
+    tab1, tab2 = st.tabs(["📋 領用紀錄 (可刪除/撤銷)", "🚚 進貨紀錄 (可刪除/撤銷)"])
+    inventory_df = load_sheet_data("庫存", INV_COLS)
     
     with tab1:
+        st.subheader("📋 領用歷史紀錄")
         usage_df = load_sheet_data("領用紀錄", USAGE_COLS)
-        st.dataframe(usage_df, use_container_width=True)
         
+        if usage_df.empty:
+            st.info("目前尚無領用紀錄。")
+        else:
+            usage_df["領用時間"] = usage_df["領用時間"].astype(str)
+            usage_df["藥品名稱"] = usage_df["藥品名稱"].astype(str).str.strip()
+            usage_df["批號"] = usage_df["批號"].astype(str).str.strip()
+            usage_df["領用數量"] = pd.to_numeric(usage_df["領用數量"], errors='coerce').fillna(0).astype(int)
+            
+            st.dataframe(usage_df, use_container_width=True)
+            
+            st.markdown("---")
+            st.subheader("🗑️ 刪除或撤銷領用紀錄")
+            
+            usage_df["select_label"] = usage_df.apply(
+                lambda r: f"[{r.name + 2}列] 日期:{r['領用時間']} | 藥品:{r['藥品名稱']} | 批號:{r['批號']} | 數量:{r['領用數量']}", axis=1
+            )
+            
+            selected_usage = st.selectbox(
+                "請選擇要刪除的領用紀錄：",
+                options=usage_df["select_label"].tolist(),
+                key="select_del_usage"
+            )
+            
+            sync_inv_usage = st.checkbox("💡 同步退回庫存 (將此筆領用數量「加回」現有庫存中)", value=True)
+            
+            if st.button("❌ 確認刪除此筆領用紀錄", type="primary", key="btn_del_usage"):
+                selected_idx = usage_df[usage_df["select_label"] == selected_usage].index[0]
+                target_row = usage_df.loc[selected_idx]
+                
+                if sync_inv_usage and not inventory_df.empty:
+                    med_name = target_row["藥品名稱"]
+                    batch = target_row["批號"]
+                    qty = target_row["領用數量"]
+                    
+                    inventory_df["藥品名稱"] = inventory_df["藥品名稱"].astype(str).str.strip()
+                    inventory_df["批號"] = inventory_df["批號"].astype(str).str.strip()
+                    
+                    mask = (inventory_df["藥品名稱"] == med_name) & (inventory_df["批號"] == batch)
+                    if mask.any():
+                        curr = pd.to_numeric(inventory_df.loc[mask, "現有庫存"], errors='coerce').fillna(0).astype(int).values[0]
+                        inventory_df.loc[mask, "現有庫存"] = curr + qty
+                        save_sheet_data(inventory_df[INV_COLS], "庫存")
+                
+                updated_usage_df = usage_df.drop(index=selected_idx).drop(columns=["select_label"])
+                if save_sheet_data(updated_usage_df[USAGE_COLS], "領用紀錄"):
+                    st.success("✅ 已成功刪除該筆領用紀錄！" + ("（庫存已同步加回）" if sync_inv_usage else ""))
+                    st.rerun()
+
     with tab2:
+        st.subheader("🚚 進貨歷史紀錄")
         restock_df = load_sheet_data("進貨紀錄", RESTOCK_COLS)
-        st.dataframe(restock_df, use_container_width=True)
+        
+        if restock_df.empty:
+            st.info("目前尚無進貨紀錄。")
+        else:
+            restock_df["進貨時間"] = restock_df["進貨時間"].astype(str)
+            restock_df["藥品名稱"] = restock_df["藥品名稱"].astype(str).str.strip()
+            restock_df["批號"] = restock_df["批號"].astype(str).str.strip()
+            restock_df["進貨數量"] = pd.to_numeric(restock_df["進貨數量"], errors='coerce').fillna(0).astype(int)
+            
+            st.dataframe(restock_df, use_container_width=True)
+            
+            st.markdown("---")
+            st.subheader("🗑️ 刪除或撤銷進貨紀錄")
+            
+            restock_df["select_label"] = restock_df.apply(
+                lambda r: f"[{r.name + 2}列] 日期:{r['進貨時間']} | 藥品:{r['藥品名稱']} | 批號:{r['批號']} | 數量:{r['進貨數量']}", axis=1
+            )
+            
+            selected_restock = st.selectbox(
+                "請選擇要刪除的進貨紀錄：",
+                options=restock_df["select_label"].tolist(),
+                key="select_del_restock"
+            )
+            
+            sync_inv_restock = st.checkbox("💡 同步扣減庫存 (將此筆進貨數量自現有庫存中「扣除」)", value=True)
+            
+            if st.button("❌ 確認刪除此筆進貨紀錄", type="primary", key="btn_del_restock"):
+                selected_idx = restock_df[restock_df["select_label"] == selected_restock].index[0]
+                target_row = restock_df.loc[selected_idx]
+                
+                if sync_inv_restock and not inventory_df.empty:
+                    med_name = target_row["藥品名稱"]
+                    batch = target_row["批號"]
+                    qty = target_row["進貨數量"]
+                    
+                    inventory_df["藥品名稱"] = inventory_df["藥品名稱"].astype(str).str.strip()
+                    inventory_df["批號"] = inventory_df["批號"].astype(str).str.strip()
+                    
+                    mask = (inventory_df["藥品名稱"] == med_name) & (inventory_df["批號"] == batch)
+                    if mask.any():
+                        curr = pd.to_numeric(inventory_df.loc[mask, "現有庫存"], errors='coerce').fillna(0).astype(int).values[0]
+                        inventory_df.loc[mask, "現有庫存"] = max(0, curr - qty)
+                        save_sheet_data(inventory_df[INV_COLS], "庫存")
+                
+                updated_restock_df = restock_df.drop(index=selected_idx).drop(columns=["select_label"])
+                if save_sheet_data(updated_restock_df[RESTOCK_COLS], "進貨紀錄"):
+                    st.success("✅ 已成功刪除該筆進貨紀錄！" + ("（庫存已同步扣除）" if sync_inv_restock else ""))
+                    st.rerun()
 
 # =============================================================================
 # 頁面 5: 月報表下載
