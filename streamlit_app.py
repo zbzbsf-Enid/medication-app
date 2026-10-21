@@ -29,11 +29,12 @@ except Exception as e:
     conn = None
 
 def load_sheet_data(worksheet_name, expected_cols):
-    """讀取雲端試算表並自動補齊欠缺欄位"""
+    """讀取雲端試算表並設置 60 秒暫存以防 API Rate Limit 超限"""
     try:
         if conn is None:
             return pd.DataFrame(columns=expected_cols)
-        df = conn.read(worksheet=worksheet_name, ttl="0s")
+        # 設定 ttl="60s" 防範 429 請求過頻錯誤
+        df = conn.read(worksheet=worksheet_name, ttl="60s")
         if df is None or df.empty:
             return pd.DataFrame(columns=expected_cols)
         for col in expected_cols:
@@ -45,7 +46,7 @@ def load_sheet_data(worksheet_name, expected_cols):
         return pd.DataFrame(columns=expected_cols)
 
 def save_sheet_data(df, worksheet_name):
-    """儲存資料至雲端試算表並重置快取"""
+    """儲存資料至雲端試算表並立刻清除快取"""
     try:
         if conn is None:
             st.error("連線物件不存在，無法儲存！")
