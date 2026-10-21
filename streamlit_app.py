@@ -154,7 +154,7 @@ page = st.sidebar.radio(
     "📌 請選擇功能：",
     [
         "💊 藥品領用登記",
-        "📦 藥品庫存清單(可編輯修正/批號/效期)",
+        "📦 藥品庫存清單(可修正數量/單位/批號/效期)",
         "🚚 進貨登記",
         "📜 歷史紀錄(修改/刪除/同步庫存)",
         "📊 月報表下載"
@@ -262,21 +262,22 @@ if page == "💊 藥品領用登記":
                             st.rerun()
 
 # =============================================================================
-# 頁面 2: 藥品庫存清單 (新增最左側「勾選刪除」核取方框)
+# 頁面 2: 藥品庫存清單 (支援數量與單位直接點擊修正)
 # =============================================================================
-elif page == "📦 藥品庫存清單(可編輯修正/批號/效期)":
-    st.title("📦 藥品庫存清單")
+elif page.startswith("📦 藥品庫存清單"):
+    st.title("📦 藥品庫存與單位修正")
     inventory_df = load_sheet_data("庫存", INV_COLS)
     
     if not inventory_df.empty:
-        inventory_df["藥品名稱"] = inventory_df["藥品名稱"].astype(str).str.strip()
-        inventory_df["批號"] = inventory_df["批號"].astype(str).str.strip()
-        inventory_df["現有庫存"] = pd.to_numeric(inventory_df["現有庫存"], errors='coerce').fillna(0).astype(int)
+        # 資料清洗：將 None 或 nan 字串轉為標準空白，避免畫面上顯示 ugly "None"
+        for c in ["藥品名稱", "中文名稱", "單位", "批號", "有效期限", "備註"]:
+            inventory_df[c] = inventory_df[c].astype(str).replace(["None", "nan", "NaN"], "").str.strip()
         
+        inventory_df["現有庫存"] = pd.to_numeric(inventory_df["現有庫存"], errors='coerce').fillna(0).astype(int)
         inventory_df = inventory_df.sort_values(by=["藥品名稱", "批號"], ascending=[True, True]).reset_index(drop=True)
         
-        st.subheader("📋 目前庫存總表 (已自動依藥品名稱 A~Z 排序)")
-        st.caption("💡 提示：若要刪除特定藥品，請在表格最左側「勾選刪除」打勾，並點擊下方「🗑️ 刪除已勾選藥品」。")
+        st.subheader("📋 藥品庫存清單 (可雙擊表格內「現有庫存」、「單位」或「批號」直接進行修正)")
+        st.caption("💡 **修改提示**：直接點擊表格儲存格修改數量或單位，改完後點擊下方「💾 儲存數量/單位修正變更」。若要刪除整個項目，請在最左側「勾選刪除」打勾。")
         
         # 最左側加入「勾選刪除」欄位
         display_inv = inventory_df.copy()
@@ -288,7 +289,13 @@ elif page == "📦 藥品庫存清單(可編輯修正/批號/效期)":
             use_container_width=True,
             column_config={
                 "勾選刪除": st.column_config.CheckboxColumn("勾選刪除", default=False),
-                "現有庫存": st.column_config.NumberColumn("現有庫存", min_value=0, step=1)
+                "現有庫存": st.column_config.NumberColumn("現有庫存 (數量)", min_value=0, step=1, required=True),
+                "單位": st.column_config.TextColumn("單位 (如: 顆/瓶/錠)", required=False),
+                "藥品名稱": st.column_config.TextColumn("藥品名稱", required=True),
+                "中文名稱": st.column_config.TextColumn("中文名稱"),
+                "批號": st.column_config.TextColumn("批號"),
+                "有效期限": st.column_config.TextColumn("有效期限"),
+                "備註": st.column_config.TextColumn("備註")
             },
             key="inventory_editor"
         )
@@ -296,17 +303,18 @@ elif page == "📦 藥品庫存清單(可編輯修正/批號/效期)":
         st.markdown("---")
         col_btn1, col_btn2 = st.columns(2)
         
-        # 按鈕 1: 儲存編輯變更
+        # 按鈕 1: 儲存數量/單位等編輯變更
         with col_btn1:
-            if st.button("💾 儲存庫存表內容變更", type="primary", use_container_width=True):
+            if st.button("💾 儲存數量 / 單位修正變更", type="primary", use_container_width=True):
                 save_df = edited_df[edited_df["勾選刪除"] == False].copy()
                 save_df = save_df.drop(columns=["勾選刪除"])
-                save_df["藥品名稱"] = save_df["藥品名稱"].astype(str).str.strip()
-                save_df["批號"] = save_df["批號"].astype(str).str.strip()
+                for c in ["藥品名稱", "中文名稱", "單位", "批號", "有效期限", "備註"]:
+                    save_df[c] = save_df[c].astype(str).replace(["None", "nan", "NaN"], "").str.strip()
+                save_df["現有庫存"] = pd.to_numeric(save_df["現有庫存"], errors='coerce').fillna(0).astype(int)
                 save_df = save_df.sort_values(by=["藥品名稱", "批號"], ascending=[True, True]).reset_index(drop=True)
                 
                 if save_sheet_data(save_df[INV_COLS], "庫存"):
-                    st.success("✅ 庫存修改已成功儲存！")
+                    st.success("✅ 庫存數量與單位修正已成功儲存至雲端！")
                     st.rerun()
 
         # 按鈕 2: 刪除已勾選藥品
@@ -318,8 +326,9 @@ elif page == "📦 藥品庫存清單(可編輯修正/批號/效期)":
                 else:
                     save_df = edited_df[edited_df["勾選刪除"] == False].copy()
                     save_df = save_df.drop(columns=["勾選刪除"])
-                    save_df["藥品名稱"] = save_df["藥品名稱"].astype(str).str.strip()
-                    save_df["批號"] = save_df["批號"].astype(str).str.strip()
+                    for c in ["藥品名稱", "中文名稱", "單位", "批號", "有效期限", "備註"]:
+                        save_df[c] = save_df[c].astype(str).replace(["None", "nan", "NaN"], "").str.strip()
+                    save_df["現有庫存"] = pd.to_numeric(save_df["現有庫存"], errors='coerce').fillna(0).astype(int)
                     save_df = save_df.sort_values(by=["藥品名稱", "批號"], ascending=[True, True]).reset_index(drop=True)
                     
                     if save_sheet_data(save_df[INV_COLS], "庫存"):
@@ -367,6 +376,7 @@ elif page == "🚚 進貨登記":
                     curr_stock = pd.to_numeric(inventory_df.loc[mask, "現有庫存"], errors='coerce').fillna(0).astype(int).values[0]
                     inventory_df.loc[mask, "現有庫存"] = curr_stock + qty
                     inventory_df.loc[mask, "有效期限"] = str(exp_date)
+                    inventory_df.loc[mask, "單位"] = unit
                 else:
                     new_inv_row = {
                         "藥品名稱": med_name,
