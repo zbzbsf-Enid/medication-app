@@ -262,7 +262,7 @@ if page == "💊 藥品領用登記":
                             st.rerun()
 
 # =============================================================================
-# 頁面 2: 藥品庫存清單 (A-Z 排序)
+# 頁面 2: 藥品庫存清單 (新增最左側「勾選刪除」核取方框)
 # =============================================================================
 elif page == "📦 藥品庫存清單(可編輯修正/批號/效期)":
     st.title("📦 藥品庫存清單")
@@ -276,24 +276,55 @@ elif page == "📦 藥品庫存清單(可編輯修正/批號/效期)":
         inventory_df = inventory_df.sort_values(by=["藥品名稱", "批號"], ascending=[True, True]).reset_index(drop=True)
         
         st.subheader("📋 目前庫存總表 (已自動依藥品名稱 A~Z 排序)")
+        st.caption("💡 提示：若要刪除特定藥品，請在表格最左側「勾選刪除」打勾，並點擊下方「🗑️ 刪除已勾選藥品」。")
+        
+        # 最左側加入「勾選刪除」欄位
+        display_inv = inventory_df.copy()
+        display_inv.insert(0, "勾選刪除", False)
         
         edited_df = st.data_editor(
-            inventory_df,
-            num_rows="dynamic",
+            display_inv,
+            hide_index=True,
             use_container_width=True,
             column_config={
+                "勾選刪除": st.column_config.CheckboxColumn("勾選刪除", default=False),
                 "現有庫存": st.column_config.NumberColumn("現有庫存", min_value=0, step=1)
-            }
+            },
+            key="inventory_editor"
         )
         
-        if st.button("💾 儲存庫存表變更", type="primary"):
-            edited_df["藥品名稱"] = edited_df["藥品名稱"].astype(str).str.strip()
-            edited_df["批號"] = edited_df["批號"].astype(str).str.strip()
-            edited_df = edited_df.sort_values(by=["藥品名稱", "批號"], ascending=[True, True]).reset_index(drop=True)
-            
-            if save_sheet_data(edited_df[INV_COLS], "庫存"):
-                st.success("✅ 庫存修改已成功儲存！")
-                st.rerun()
+        st.markdown("---")
+        col_btn1, col_btn2 = st.columns(2)
+        
+        # 按鈕 1: 儲存編輯變更
+        with col_btn1:
+            if st.button("💾 儲存庫存表內容變更", type="primary", use_container_width=True):
+                save_df = edited_df[edited_df["勾選刪除"] == False].copy()
+                save_df = save_df.drop(columns=["勾選刪除"])
+                save_df["藥品名稱"] = save_df["藥品名稱"].astype(str).str.strip()
+                save_df["批號"] = save_df["批號"].astype(str).str.strip()
+                save_df = save_df.sort_values(by=["藥品名稱", "批號"], ascending=[True, True]).reset_index(drop=True)
+                
+                if save_sheet_data(save_df[INV_COLS], "庫存"):
+                    st.success("✅ 庫存修改已成功儲存！")
+                    st.rerun()
+
+        # 按鈕 2: 刪除已勾選藥品
+        with col_btn2:
+            if st.button("🗑️ 刪除已勾選藥品項目", use_container_width=True):
+                to_delete = edited_df[edited_df["勾選刪除"] == True]
+                if to_delete.empty:
+                    st.warning("⚠️ 請先在表格最左側「勾選刪除」打勾選擇要刪除的藥品！")
+                else:
+                    save_df = edited_df[edited_df["勾選刪除"] == False].copy()
+                    save_df = save_df.drop(columns=["勾選刪除"])
+                    save_df["藥品名稱"] = save_df["藥品名稱"].astype(str).str.strip()
+                    save_df["批號"] = save_df["批號"].astype(str).str.strip()
+                    save_df = save_df.sort_values(by=["藥品名稱", "批號"], ascending=[True, True]).reset_index(drop=True)
+                    
+                    if save_sheet_data(save_df[INV_COLS], "庫存"):
+                        st.success(f"✅ 已成功刪除 {len(to_delete)} 筆藥品資料！")
+                        st.rerun()
 
 # =============================================================================
 # 頁面 3: 進貨登記
