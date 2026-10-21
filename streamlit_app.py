@@ -61,7 +61,7 @@ def save_sheet_data(df, worksheet_name):
         return False
 
 # -----------------------------------------------------------------------------
-# 美化版 Excel 月報表繪製函數 (100% 擬真衛保組範本)
+# 美化版 Excel 月報表繪製函數 (符合衛保組官方範本)
 # -----------------------------------------------------------------------------
 def generate_pretty_excel(report_df, title_text, prev_stock_col, end_stock_col):
     output = io.BytesIO()
@@ -81,7 +81,7 @@ def generate_pretty_excel(report_df, title_text, prev_stock_col, end_stock_col):
 
     # 樣式定義
     header_font = Font(name="微軟正黑體", size=9, bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="2E5B88", end_color="2E5B88", fill_type="solid") # 深藍色表頭
+    header_fill = PatternFill(start_color="2E5B88", end_color="2E5B88", fill_type="solid")
     header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
     thin_border = Border(
@@ -91,10 +91,10 @@ def generate_pretty_excel(report_df, title_text, prev_stock_col, end_stock_col):
         bottom=Side(style='thin', color='D9D9D9')
     )
 
-    yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid") # 當月使用總量黃底
-    purple_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid") # 購入/報銷/公藥紫藍底
+    yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+    purple_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
 
-    red_font = Font(name="微軟正黑體", size=9, bold=True, color="C00000") # 庫存紅字
+    red_font = Font(name="微軟正黑體", size=9, bold=True, color="C00000")
     bold_font = Font(name="微軟正黑體", size=9, bold=True)
     normal_font = Font(name="微軟正黑體", size=9)
 
@@ -117,10 +117,10 @@ def generate_pretty_excel(report_df, title_text, prev_stock_col, end_stock_col):
             cell.border = thin_border
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-            if col_idx == 1: # 藥品名稱
+            if col_idx == 1:
                 cell.alignment = Alignment(horizontal="left", vertical="center")
                 cell.font = normal_font
-            elif col_name in [prev_stock_col, end_stock_col]: # 上月剩餘量 / 期末剩餘量 (紅字)
+            elif col_name in [prev_stock_col, end_stock_col]:
                 cell.font = red_font
             elif col_name == "當月使用\n總量":
                 cell.fill = yellow_fill
@@ -131,7 +131,7 @@ def generate_pretty_excel(report_df, title_text, prev_stock_col, end_stock_col):
             else:
                 cell.font = normal_font
 
-    # 自動微調欄寬
+    # 微調欄寬
     for col_idx, col in enumerate(ws.columns, 1):
         col_letter = openpyxl.utils.get_column_letter(col_idx)
         if col_idx == 1:
@@ -366,12 +366,12 @@ elif page == "🚚 進貨登記":
                     st.rerun()
 
 # =============================================================================
-# 頁面 4: 歷史紀錄 (多選刪除與庫存同步)
+# 頁面 4: 歷史紀錄 (表格打勾批次選擇刪除)
 # =============================================================================
 elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
     st.title("📜 歷史紀錄管理與庫存同步異動")
     
-    tab1, tab2 = st.tabs(["📋 領用紀錄 (可多選刪除/撤銷)", "🚚 進貨紀錄 (可多選刪除/撤銷)"])
+    tab1, tab2 = st.tabs(["📋 領用紀錄 (可直接打勾刪除)", "🚚 進貨紀錄 (可直接打勾刪除)"])
     inventory_df = load_sheet_data("庫存", INV_COLS)
     
     with tab1:
@@ -386,29 +386,32 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
             usage_df["批號"] = usage_df["批號"].astype(str).str.strip()
             usage_df["領用數量"] = pd.to_numeric(usage_df["領用數量"], errors='coerce').fillna(0).astype(int)
             
-            st.dataframe(usage_df, use_container_width=True)
+            st.markdown("👇 **請直接在下方表格最左側「勾選刪除」打勾選取要刪除的列：**")
+            
+            display_usage = usage_df.copy()
+            display_usage.insert(0, "勾選刪除", False)
+            
+            edited_usage = st.data_editor(
+                display_usage,
+                column_config={
+                    "勾選刪除": st.column_config.CheckboxColumn("勾選刪除", default=False)
+                },
+                disabled=[col for col in display_usage.columns if col != "勾選刪除"],
+                hide_index=True,
+                use_container_width=True,
+                key="editor_usage"
+            )
+            
+            selected_rows = edited_usage[edited_usage["勾選刪除"] == True]
             
             st.markdown("---")
-            st.subheader("🗑️ 批次刪除或撤銷領用紀錄")
+            sync_inv_usage = st.checkbox("💡 同步退回庫存 (將勾選紀錄之領用數量「加回」現有庫存中)", value=True)
             
-            usage_df["select_label"] = usage_df.apply(
-                lambda r: f"[{r.name + 2}列] 日期:{r['領用時間']} | 藥品:{r['藥品名稱']} | 批號:{r['批號']} | 數量:{r['領用數量']}", axis=1
-            )
-            
-            selected_usages = st.multiselect(
-                "請選擇要刪除的領用紀錄（可一次搜尋並勾選多筆）：",
-                options=usage_df["select_label"].tolist(),
-                key="select_del_usage",
-                placeholder="請點擊或輸入關鍵字搜尋要刪除的領用紀錄..."
-            )
-            
-            sync_inv_usage = st.checkbox("💡 同步退回庫存 (將所選紀錄之領用數量「加回」現有庫存中)", value=True)
-            
-            if st.button("❌ 確認刪除所選領用紀錄", type="primary", key="btn_del_usage"):
-                if not selected_usages:
-                    st.warning("⚠️ 請先選擇至少一筆要刪除的紀錄！")
+            if st.button("❌ 確認刪除已勾選領用紀錄", type="primary", key="btn_del_usage"):
+                if selected_rows.empty:
+                    st.warning("⚠️ 請先在上方表格最左側「勾選刪除」打勾選擇紀錄！")
                 else:
-                    selected_indices = usage_df[usage_df["select_label"].isin(selected_usages)].index
+                    selected_indices = selected_rows.index
                     
                     if sync_inv_usage and not inventory_df.empty:
                         inventory_df["藥品名稱"] = inventory_df["藥品名稱"].astype(str).str.strip()
@@ -427,7 +430,7 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
                         
                         save_sheet_data(inventory_df[INV_COLS], "庫存")
                     
-                    updated_usage_df = usage_df.drop(index=selected_indices).drop(columns=["select_label"])
+                    updated_usage_df = usage_df.drop(index=selected_indices)
                     if save_sheet_data(updated_usage_df[USAGE_COLS], "領用紀錄"):
                         st.success(f"✅ 已成功刪除 {len(selected_indices)} 筆領用紀錄！" + ("（庫存已同步加回）" if sync_inv_usage else ""))
                         st.rerun()
@@ -444,29 +447,32 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
             restock_df["批號"] = restock_df["批號"].astype(str).str.strip()
             restock_df["進貨數量"] = pd.to_numeric(restock_df["進貨數量"], errors='coerce').fillna(0).astype(int)
             
-            st.dataframe(restock_df, use_container_width=True)
+            st.markdown("👇 **請直接在下方表格最左側「勾選刪除」打勾選取要刪除的列：**")
+            
+            display_restock = restock_df.copy()
+            display_restock.insert(0, "勾選刪除", False)
+            
+            edited_restock = st.data_editor(
+                display_restock,
+                column_config={
+                    "勾選刪除": st.column_config.CheckboxColumn("勾選刪除", default=False)
+                },
+                disabled=[col for col in display_restock.columns if col != "勾選刪除"],
+                hide_index=True,
+                use_container_width=True,
+                key="editor_restock"
+            )
+            
+            selected_rows_r = edited_restock[edited_restock["勾選刪除"] == True]
             
             st.markdown("---")
-            st.subheader("🗑️ 批次刪除或撤銷進貨紀錄")
+            sync_inv_restock = st.checkbox("💡 同步扣減庫存 (將勾選紀錄之進貨數量自現有庫存中「扣除」)", value=True)
             
-            restock_df["select_label"] = restock_df.apply(
-                lambda r: f"[{r.name + 2}列] 日期:{r['進貨時間']} | 藥品:{r['藥品名稱']} | 批號:{r['批號']} | 數量:{r['進貨數量']}", axis=1
-            )
-            
-            selected_restocks = st.multiselect(
-                "請選擇要刪除的進貨紀錄（可一次搜尋並勾選多筆）：",
-                options=restock_df["select_label"].tolist(),
-                key="select_del_restock",
-                placeholder="請點擊或輸入關鍵字搜尋要刪除的進貨紀錄..."
-            )
-            
-            sync_inv_restock = st.checkbox("💡 同步扣減庫存 (將所選紀錄之進貨數量自現有庫存中「扣除」)", value=True)
-            
-            if st.button("❌ 確認刪除所選進貨紀錄", type="primary", key="btn_del_restock"):
-                if not selected_restocks:
-                    st.warning("⚠️ 請先選擇至少一筆要刪除的紀錄！")
+            if st.button("❌ 確認刪除已勾選進貨紀錄", type="primary", key="btn_del_restock"):
+                if selected_rows_r.empty:
+                    st.warning("⚠️ 請先在上方表格最左側「勾選刪除」打勾選擇紀錄！")
                 else:
-                    selected_indices = restock_df[restock_df["select_label"].isin(selected_restocks)].index
+                    selected_indices = selected_rows_r.index
                     
                     if sync_inv_restock and not inventory_df.empty:
                         inventory_df["藥品名稱"] = inventory_df["藥品名稱"].astype(str).str.strip()
@@ -485,7 +491,7 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
                         
                         save_sheet_data(inventory_df[INV_COLS], "庫存")
                     
-                    updated_restock_df = restock_df.drop(index=selected_indices).drop(columns=["select_label"])
+                    updated_restock_df = restock_df.drop(index=selected_indices)
                     if save_sheet_data(updated_restock_df[RESTOCK_COLS], "進貨紀錄"):
                         st.success(f"✅ 已成功刪除 {len(selected_indices)} 筆進貨紀錄！" + ("（庫存已同步扣除）" if sync_inv_restock else ""))
                         st.rerun()
@@ -502,7 +508,6 @@ elif page == "📊 月報表下載":
     selected_year = col_y.number_input("選擇年份(西元)", min_value=2020, max_value=2030, value=tw_now.year)
     selected_month = col_m.selectbox("選擇月份", list(range(1, 13)), index=tw_now.month - 1)
     
-    # 計算民國年與學年度
     roc_year = selected_year - 1911
     acad_year = roc_year - 1 if selected_month < 8 else roc_year
     semester = "下學期" if 1 <= selected_month <= 7 else "上學期"
@@ -548,7 +553,6 @@ elif page == "📊 月報表下載":
             zh_name = str(inv_row.get("中文名稱", "")).strip()
             batch_no = str(inv_row.get("批號", "")).strip()
             
-            # 藥品名稱(商品名/中文) 格式
             full_name = f"{med_name}({zh_name})" if zh_name else med_name
             
             curr_stock = pd.to_numeric(inv_row.get(target_col, 0), errors='coerce')
@@ -557,7 +561,6 @@ elif page == "📊 月報表下載":
             daily_quantities = {}
             daily_total = 0
             
-            # 統計當月份 1~N 日領用數量
             for d in range(1, num_days + 1):
                 day_str = f"{selected_year}-{selected_month:02d}-{d:02d}"
                 col_name = f"{selected_month}/{d}"
@@ -572,7 +575,6 @@ elif page == "📊 月報表下載":
                 daily_quantities[col_name] = qty_val
                 daily_total += qty_val
 
-            # 統計全月領用類別與進貨量
             if batch_no:
                 m_usage = usage_df[(usage_df["藥品名稱"] == med_name) & (usage_df["批號"] == batch_no) & (usage_df["領用時間"] >= m_start) & (usage_df["領用時間"] <= m_end)]
                 matched_r = restock_df[(restock_df["藥品名稱"] == med_name) & (restock_df["批號"] == batch_no) & (restock_df["進貨時間"] >= m_start) & (restock_df["進貨時間"] <= m_end)]
@@ -584,7 +586,6 @@ elif page == "📊 月報表下載":
             scrap_qty = pd.to_numeric(m_usage[m_usage["領用類別"] == "過期報銷"]["領用數量"], errors='coerce').sum() if not m_usage.empty else 0
             restock_qty = pd.to_numeric(matched_r["進貨數量"], errors='coerce').sum() if not matched_r.empty else 0
             
-            # 期初庫存自動回推
             start_stock = curr_stock + daily_total - restock_qty
 
             row_dict = {
@@ -612,7 +613,6 @@ elif page == "📊 月報表下載":
         
         col_dl1, col_dl2 = st.columns(2)
         
-        # 1. Excel 美化格式下載 (.xlsx)
         excel_bytes = generate_pretty_excel(report_df, title_text, prev_stock_col, end_stock_col)
         col_dl1.download_button(
             label="📗 下載美化 Excel 報表 (.xlsx / 含色彩標籤與標題)",
@@ -623,7 +623,6 @@ elif page == "📊 月報表下載":
             use_container_width=True
         )
         
-        # 2. CSV 純文字下載 (.csv)
         csv_data = report_df.to_csv(index=False).encode('utf-8-sig')
         col_dl2.download_button(
             label="📄 下載純文字 CSV 報表 (.csv)",
