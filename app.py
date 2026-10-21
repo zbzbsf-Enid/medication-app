@@ -2,6 +2,9 @@ import streamlit as st
 import pandas as pd
 import datetime
 import calendar
+import io
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from streamlit_gsheets import GSheetsConnection
 
 # -----------------------------------------------------------------------------
@@ -33,7 +36,6 @@ def load_sheet_data(worksheet_name, expected_cols):
     try:
         if conn is None:
             return pd.DataFrame(columns=expected_cols)
-        # 設定 ttl="60s" 防範 429 請求過頻錯誤
         df = conn.read(worksheet=worksheet_name, ttl="60s")
         if df is None or df.empty:
             return pd.DataFrame(columns=expected_cols)
@@ -57,6 +59,89 @@ def save_sheet_data(df, worksheet_name):
     except Exception as e:
         st.error(f"儲存工作表 【{worksheet_name}】 失敗: {e}")
         return False
+
+# -----------------------------------------------------------------------------
+# 美化版 Excel 月報表繪製函數 (100% 擬真衛保組範本)
+# -----------------------------------------------------------------------------
+def generate_pretty_excel(report_df, title_text, prev_stock_col, end_stock_col):
+    output = io.BytesIO()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "藥品使用月報表"
+    ws.views.sheetView[0].showGridLines = True
+
+    total_cols = len(report_df.columns)
+
+    # 1. 大標題列 (Row 1)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+    title_cell = ws.cell(row=1, column=1, value=title_text)
+    title_cell.font = Font(name="微軟正黑體", size=13, bold=True, color="000000")
+    title_cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 32
+
+    # 樣式定義
+    header_font = Font(name="微軟正黑體", size=9, bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="2E5B88", end_color="2E5B88", fill_type="solid") # 深藍色表頭
+    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    thin_border = Border(
+        left=Side(style='thin', color='D9D9D9'),
+        right=Side(style='thin', color='D9D9D9'),
+        top=Side(style='thin', color='D9D9D9'),
+        bottom=Side(style='thin', color='D9D9D9')
+    )
+
+    yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid") # 當月使用總量黃底
+    purple_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid") # 購入/報銷/公藥紫藍底
+
+    red_font = Font(name="微軟正黑體", size=9, bold=True, color="C00000") # 庫存紅字
+    bold_font = Font(name="微軟正黑體", size=9, bold=True)
+    normal_font = Font(name="微軟正黑體", size=9)
+
+    # 2. 寫入欄位標題 (Row 2)
+    cols = list(report_df.columns)
+    for col_idx, col_name in enumerate(cols, 1):
+        cell = ws.cell(row=2, column=col_idx, value=col_name)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+        cell.border = thin_border
+    ws.row_dimensions[2].height = 28
+
+    # 3. 寫入資料列 (Row 3+)
+    for row_idx, row_data in enumerate(report_df.values, 3):
+        ws.row_dimensions[row_idx].height = 20
+        for col_idx, value in enumerate(row_data, 1):
+            col_name = cols[col_idx - 1]
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = thin_border
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+            if col_idx == 1: # 藥品名稱
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+                cell.font = normal_font
+            elif col_name in [prev_stock_col, end_stock_col]: # 上月剩餘量 / 期末剩餘量 (紅字)
+                cell.font = red_font
+            elif col_name == "當月使用\n總量":
+                cell.fill = yellow_fill
+                cell.font = bold_font
+            elif col_name in ["購入量", "過期報銷", "公藥使用"]:
+                cell.fill = purple_fill
+                cell.font = normal_font
+            else:
+                cell.font = normal_font
+
+    # 自動微調欄寬
+    for col_idx, col in enumerate(ws.columns, 1):
+        col_letter = openpyxl.utils.get_column_letter(col_idx)
+        if col_idx == 1:
+            ws.column_dimensions[col_letter].width = 32
+        else:
+            ws.column_dimensions[col_letter].width = 9
+
+    wb.save(output)
+    output.seek(0)
+    return output.getvalue()
 
 # -----------------------------------------------------------------------------
 # 2. 側邊欄與頁面選單
@@ -117,7 +202,7 @@ if page == "💊 藥品領用登記":
                 st.subheader("2. 本次領用清單與預覽填寫資訊")
                 with st.form("usage_form"):
                     col1, col2 = st.columns(2)
-                    use_type = col1.selectbox("領用類別", ["一般領用", "公藥"])
+                    use_type = col1.selectbox("領用類別", ["一般領用", "公藥", "過期報銷"])
                     usage_date = col2.date_input("領用日期", value=tw_now.date())
                     
                     items_to_submit = []
@@ -281,7 +366,7 @@ elif page == "🚚 進貨登記":
                     st.rerun()
 
 # =============================================================================
-# 頁面 4: 歷史紀錄 (支援多選/多欄位批次刪除與庫存同步)
+# 頁面 4: 歷史紀錄 (多選刪除與庫存同步)
 # =============================================================================
 elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
     st.title("📜 歷史紀錄管理與庫存同步異動")
@@ -406,17 +491,18 @@ elif page == "📜 歷史紀錄(修改/刪除/同步庫存)":
                         st.rerun()
 
 # =============================================================================
-# 頁面 5: 月報表下載
+# 頁面 5: 100% 衛保組標準格式月報表下載
 # =============================================================================
 elif page == "📊 月報表下載":
-    st.title("📊 藥品使用月報表與統計表繪出")
-    st.write("產出格式符合國立臺北大學衛保組月報表標準格式。")
+    st.title("📊 國立臺北大學衛保組 - 藥品使用月報表與全學期統計表")
+    st.caption("產出格式完全符合衛保組官方標準Excel報表樣式。")
     
     tw_now = get_tw_now()
     col_y, col_m = st.columns(2)
     selected_year = col_y.number_input("選擇年份(西元)", min_value=2020, max_value=2030, value=tw_now.year)
     selected_month = col_m.selectbox("選擇月份", list(range(1, 13)), index=tw_now.month - 1)
     
+    # 計算民國年與學年度
     roc_year = selected_year - 1911
     acad_year = roc_year - 1 if selected_month < 8 else roc_year
     semester = "下學期" if 1 <= selected_month <= 7 else "上學期"
@@ -425,24 +511,28 @@ elif page == "📊 月報表下載":
     prev_year = selected_year - 1 if selected_month == 1 else selected_year
     prev_roc_year = prev_year - 1911
     
-    if st.button("📥 產生並預覽月報表", type="primary", use_container_width=True):
+    title_text = f"國立臺北大學衛保組 {acad_year}學年度{semester}藥品使用月報表與全學期統計表 ({acad_year}學年度{selected_month}月起)"
+    prev_stock_col = f"{prev_roc_year}年{prev_month}月\n剩餘量"
+    end_stock_col = f"{roc_year}年{selected_month}月\n期末剩餘量"
+    
+    if st.button("📊 產生並預覽全學期標準月報表", type="primary", use_container_width=True):
         inventory_df = load_sheet_data("庫存", INV_COLS)
         usage_df = load_sheet_data("領用紀錄", USAGE_COLS)
         restock_df = load_sheet_data("進貨紀錄", RESTOCK_COLS)
         
-        target_col = "現有庫存" if "現有庫存" in inventory_df.columns else ("剩餘庫存" if "剩餘庫存" in inventory_df.columns else "現有庫存")
+        target_col = "現有庫存" if "現有庫存" in inventory_df.columns else "剩餘庫存"
         
         inventory_df["藥品名稱"] = inventory_df["藥品名稱"].astype(str).str.strip()
-        inventory_df["批號"] = inventory_df["批號"].astype(str).str.strip() if "批號" in inventory_df.columns else ""
+        inventory_df["批號"] = inventory_df["批號"].astype(str).str.strip()
         inventory_df = inventory_df.sort_values(by=["藥品名稱", "批號"], ascending=[True, True]).reset_index(drop=True)
         
         usage_df["領用時間"] = usage_df["領用時間"].astype(str)
         usage_df["藥品名稱"] = usage_df["藥品名稱"].astype(str).str.strip()
-        usage_df["批號"] = usage_df["批號"].astype(str).str.strip() if "批號" in usage_df.columns else ""
+        usage_df["批號"] = usage_df["批號"].astype(str).str.strip()
             
         restock_df["進貨時間"] = restock_df["進貨時間"].astype(str)
         restock_df["藥品名稱"] = restock_df["藥品名稱"].astype(str).str.strip()
-        restock_df["批號"] = restock_df["批號"].astype(str).str.strip() if "批號" in restock_df.columns else ""
+        restock_df["批號"] = restock_df["批號"].astype(str).str.strip()
         
         _, num_days = calendar.monthrange(selected_year, selected_month)
         m_start = f"{selected_year}-{selected_month:02d}-01"
@@ -457,6 +547,8 @@ elif page == "📊 月報表下載":
                 
             zh_name = str(inv_row.get("中文名稱", "")).strip()
             batch_no = str(inv_row.get("批號", "")).strip()
+            
+            # 藥品名稱(商品名/中文) 格式
             full_name = f"{med_name}({zh_name})" if zh_name else med_name
             
             curr_stock = pd.to_numeric(inv_row.get(target_col, 0), errors='coerce')
@@ -464,6 +556,8 @@ elif page == "📊 月報表下載":
             
             daily_quantities = {}
             daily_total = 0
+            
+            # 統計當月份 1~N 日領用數量
             for d in range(1, num_days + 1):
                 day_str = f"{selected_year}-{selected_month:02d}-{d:02d}"
                 col_name = f"{selected_month}/{d}"
@@ -478,6 +572,7 @@ elif page == "📊 月報表下載":
                 daily_quantities[col_name] = qty_val
                 daily_total += qty_val
 
+            # 統計全月領用類別與進貨量
             if batch_no:
                 m_usage = usage_df[(usage_df["藥品名稱"] == med_name) & (usage_df["批號"] == batch_no) & (usage_df["領用時間"] >= m_start) & (usage_df["領用時間"] <= m_end)]
                 matched_r = restock_df[(restock_df["藥品名稱"] == med_name) & (restock_df["批號"] == batch_no) & (restock_df["進貨時間"] >= m_start) & (restock_df["進貨時間"] <= m_end)]
@@ -485,21 +580,23 @@ elif page == "📊 月報表下載":
                 m_usage = usage_df[(usage_df["藥品名稱"] == med_name) & (usage_df["領用時間"] >= m_start) & (usage_df["領用時間"] <= m_end)]
                 matched_r = restock_df[(restock_df["藥品名稱"] == med_name) & (restock_df["進貨時間"] >= m_start) & (restock_df["進貨時間"] <= m_end)]
                 
-            public_qty = pd.to_numeric(m_usage[m_usage["領用類別"] == "公藥"]["領用數量"], errors='coerce').sum() if not m_usage.empty else 0
+            public_qty = pd.to_numeric(m_usage[m_usage["領用類別"].isin(["公藥", "公務使用"])]["領用數量"], errors='coerce').sum() if not m_usage.empty else 0
+            scrap_qty = pd.to_numeric(m_usage[m_usage["領用類別"] == "過期報銷"]["領用數量"], errors='coerce').sum() if not m_usage.empty else 0
             restock_qty = pd.to_numeric(matched_r["進貨數量"], errors='coerce').sum() if not matched_r.empty else 0
             
+            # 期初庫存自動回推
             start_stock = curr_stock + daily_total - restock_qty
 
             row_dict = {
                 "藥品名稱\n(商品名/中文)": full_name,
-                f"{prev_roc_year}年{prev_month}月\n剩餘量": int(start_stock)
+                prev_stock_col: int(start_stock)
             }
             row_dict.update(daily_quantities)
             row_dict["當月使用\n總量"] = int(daily_total)
             row_dict["購入量"] = int(restock_qty)
-            row_dict["過期報銷"] = 0
+            row_dict["過期報銷"] = int(scrap_qty)
             row_dict["公藥使用"] = int(public_qty)
-            row_dict[f"{roc_year}年{selected_month}月\n期末剩餘量"] = int(curr_stock)
+            row_dict[end_stock_col] = int(curr_stock)
             
             report_rows.append(row_dict)
 
@@ -507,14 +604,31 @@ elif page == "📊 月報表下載":
         if not report_df.empty:
             report_df = report_df.sort_values(by="藥品名稱\n(商品名/中文)", ascending=True).reset_index(drop=True)
 
-        st.subheader(f"📋 國立臺北大學衛保組 {acad_year}學年度{semester}藥品使用月報表 ({roc_year}年{selected_month}月)")
+        st.subheader(f"📋 {title_text}")
         st.dataframe(report_df, use_container_width=True)
         
+        st.markdown("---")
+        st.markdown("### 📥 下載官方格式報表檔")
+        
+        col_dl1, col_dl2 = st.columns(2)
+        
+        # 1. Excel 美化格式下載 (.xlsx)
+        excel_bytes = generate_pretty_excel(report_df, title_text, prev_stock_col, end_stock_col)
+        col_dl1.download_button(
+            label="📗 下載美化 Excel 報表 (.xlsx / 含色彩標籤與標題)",
+            data=excel_bytes,
+            file_name=f"國立臺北大學衛保組_{roc_year}年{selected_month}月藥品使用月報表.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True
+        )
+        
+        # 2. CSV 純文字下載 (.csv)
         csv_data = report_df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button(
-            label="📥 下載月報表 (CSV 檔 / 可於 Excel 開啟)",
+        col_dl2.download_button(
+            label="📄 下載純文字 CSV 報表 (.csv)",
             data=csv_data,
-            file_name=f"衛保組_{roc_year}年{selected_month}月藥品使用月報表.csv",
+            file_name=f"國立臺北大學衛保組_{roc_year}年{selected_month}月藥品使用月報表.csv",
             mime="text/csv",
-            type="primary"
+            use_container_width=True
         )
